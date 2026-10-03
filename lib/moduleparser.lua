@@ -1,17 +1,13 @@
 local streamutils = localRequire("lib/streamutils")
-local codeparser = localRequire("lib/codeparser")
 local instr = localRequire("lib/instructions")
+local types = localRequire("lib/types")
 
-local readU1, readU4, readInt, readArr, wrap_stream, readList
-  = streamutils.readU1, streamutils.readU4, streamutils.readInt,
+local readU8, readU32, readInt, readArr, wrap_stream, readList
+  = streamutils.readU8, streamutils.readU32, streamutils.readInt,
   streamutils.readArr, streamutils.wrapStream, streamutils.readList
-
-local COMP_TYPE_FUNC = 0
-local COMP_TYPE_MEM = 2
-local VTYPE_F64 = 0x7C
-local VTYPE_F32 = 0x7D
-local VTYPE_I64 = 0x7E
-local VTYPE_I32 = 0x7F
+local COMP_TYPE_FUNC, COMP_TYPE_MEM, VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32
+  = types.COMP_TYPE_FUNC, types.COMP_TYPE_MEM, types.VTYPE_F64,
+  types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32
 
 local function MERGE_TABLES(...)
   local new = {}
@@ -39,16 +35,48 @@ local HEAP_TYPES = {
 -- TODO: Other types
 local VAL_TYPES = MERGE_TABLES(NUM_TYPES)
 
+-- Compress to a u32 block to save memory
+local function u8BlockToU32Block(block)
+  local compressed = {}
+  for i = 1, #block, 4 do
+    local b1 = block[i] or 0
+    local b2 = block[i + 1] or 0
+    local b3 = block[i + 2] or 0
+    local b4 = block[i + 3] or 0
+    local u4 = b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)
+    table.insert(compressed, u4)
+  end
+
+  return compressed
+end
+
 local function readName(stream)
-  local bytes, err = readList(stream, readU1)
-  if not bytes then return false, err end
+  local bytes, err = readList(stream, readU8)
+  if not bytes then return nil, err end
   return string.char(table.unpack(bytes))
+end
+
+local function readExpr(stream)
+  local val, err = readU8(stream)
+  if not val then return nil, err end
+  -- TODO: Other stuff (esp. since need to balance nested 0x0B)
+  local bytes = {}
+  while val ~= 0x0B do
+    table.insert(bytes, val)
+    val, err = readU8(stream)
+    if not val then return nil, err end
+  end
+
+  return {
+    data = u8BlockToU32Block(bytes),
+    len = #bytes
+  }
 end
 
 local function readValType(stream)
   -- TODO: Support other options
-  local subop, err = readU1(stream)
-  if not subop then return false, err end
+  local subop, err = readU8(stream)
+  if not subop then return nil, err end
   local type = VAL_TYPES[subop]
   if not type then
     return false, "Only num types supported at this time"
@@ -62,17 +90,17 @@ local function readResultType(stream)
 end
 
 local function readComptype(stream)
-  local subop = readU1(stream)
+  local subop = readU8(stream)
   -- TODO: Support other options
   if subop ~= 0x60 then
     return false, "Only func is supported at this time"
   end
 
   local params, err = readResultType(stream)
-  if not params then return false, err end
+  if not params then return nil, err end
 
   local rtn, err = readResultType(stream)
-  if not rtn then return false, err end
+  if not rtn then return nil, err end
 
   return {
     type = COMP_TYPE_FUNC,
@@ -102,8 +130,8 @@ local readFuncIdx = readIdx
 local readMemIdx = readIdx
 
 local function readExternIdx(stream)
-  local subop, err = readU1(stream)
-  if not subop then return false, err end
+  local subop, err = readU8(stream)
+  if not subop then return nil, err end
   -- TODO: Support other options
   local type
   if subop == 0x00 then
@@ -124,11 +152,11 @@ end
 
 local function readImport(stream)
   local moduleName, err = readName(stream)
-  if not moduleName then return false, err end
+  if not moduleName then return nil, err end
   local itemName, err = readName(stream)
-  if not itemName then return false, err end
+  if not itemName then return nil, err end
   local externIdx, err = readExternIdx(stream)
-  if not externIdx then return false, err end
+  if not externIdx then return nil, err end
 
   return {
     moduleName = moduleName,
@@ -138,8 +166,8 @@ local function readImport(stream)
 end
 
 local function readHeapType(stream)
-  local subop, err = readU1(stream)
-  if not subop then return false, err end
+  local subop, err = readU8(stream)
+  if not subop then return nil, err end
 
   local type = HEAP_TYPES[subop]
   if not type then
@@ -150,21 +178,21 @@ local function readHeapType(stream)
 end
 
 local function readLimits(stream)
-  local subop, err = readU1(stream)
-  if not subop then return false, err end
+  local subop, err = readU8(stream)
+  if not subop then return nil, err end
   local min, err = readInt(stream, 64)
   local max, isExtended = nil, false
   if subop == 0x00 then
     -- Do nothing
   elseif subop == 0x01 then
     max, err = readInt(stream, 64)
-    if not max then return false, err end
+    if not max then return nil, err end
   elseif subop == 0x04 then
     isExtended = true
   elseif subop == 0x01 then
     isExtended = true
     max, err = readInt(stream, 64)
-    if not max then return false, err end
+    if not max then return nil, err end
   end
 
   return {
@@ -179,9 +207,9 @@ local readRefType = readHeapType
 
 local function readTable(stream)
   local type, err = readRefType(stream)
-  if not type then return false, err end
+  if not type then return nil, err end
   local limit, err = readLimits(stream)
-  if not limit then return false, err end
+  if not limit then return nil, err end
 
   return {
     type = type,
@@ -191,7 +219,7 @@ end
 
 local function readMemType(stream)
   local limit, err = readLimits(stream)
-  if not limit then return false, err end
+  if not limit then return nil, err end
 
   return {
     limit = limit
@@ -199,7 +227,7 @@ local function readMemType(stream)
 end
 
 local function readMut(stream)
-  local val, err = readU1(stream)
+  local val, err = readU8(stream)
   if not val then return nil, false, err end
   if val == 0 then
     return false, true
@@ -212,9 +240,9 @@ end
 
 local function readGlobalType(stream)
   local type, err = readValType(stream)
-  if not type then return false, err end
+  if not type then return nil, err end
   local mutable, ok, err = readMut(stream)
-  if not ok then return false, err end
+  if not ok then return nil, err end
 
   return {
     type = type,
@@ -224,9 +252,9 @@ end
 
 local function readGlobal(stream)
   local type, err = readGlobalType(stream)
-  if not type then return false, err end
-  local expr, err = codeparser.readExpr(stream)
-  if not expr then return false, err end
+  if not type then return nil, err end
+  local expr, err = readExpr(stream)
+  if not expr then return nil, err end
 
   return {
     type = type,
@@ -236,22 +264,22 @@ end
 
 local function readExport(stream)
   local exportName, err = readName(stream)
-  if not exportName then return false, err end
+  if not exportName then return nil, err end
   local externIdx, err = readExternIdx(stream)
-  if not externIdx then return false, err end
+  if not externIdx then return nil, err end
 
   return {
-    exportName = exportName,
-    externType = externIdx
+    name = exportName,
+    type = externIdx
   }
 end
 
 local function readElem(stream)
   local subop, err = readInt(stream, 32)
-  if not subop then return false, err end
+  if not subop then return nil, err end
   
   if subop == 0 then
-    local expr = codeparser.readExpr(stream)
+    local expr = readExpr(stream)
     local idxs = readList(stream, readFuncIdx)
 
     -- TODO: Is this the right way to handle this?
@@ -259,7 +287,7 @@ local function readElem(stream)
     local funcExprPos = 1
     for _, idx in ipairs(idxs) do
       funcExprPos, err = instr.ref.func.write(funcExpr, funcExprPos, idx)
-      if not funcExprPos then return false, err end
+      if not funcExprPos then return nil, err end
     end
 
     return {
@@ -274,38 +302,39 @@ local function readElem(stream)
   end
 end
 
+local function readCode(stream)
+  local code, err = readList(stream, readU8)
+  if not code then return nil, err end
+  local compressed = u8BlockToU32Block(code)
+
+  return {
+    codelen = #code,
+    code = compressed
+  }
+end
+
 local function readData(stream)
   local subop, err = readInt(stream, 32)
-  if not subop then return false, err end
+  if not subop then return nil, err end
 
   local active, memidx, expr, err = true, 0, nil, nil
   if subop == 0 then
-    expr, err = codeparser.readExpr(stream)
-    if not expr then return false, err end
+    expr, err = readExpr(stream)
+    if not expr then return nil, err end
   elseif subop == 1 then
     active = false
   elseif subop == 2 then
-    -- False positive
-    ---@diagnostic disable-next-line: cast-local-type
     memidx, err = readMemIdx(stream)
-    if not memidx then return false, err end
-    expr, err = codeparser.readExpr(stream)
-    if not expr then return false, err end
+    if not memidx then return nil, err end
+    expr, err = readExpr(stream)
+    if not expr then return nil, err end
   else
     return false, "Invalid readData subop"
   end
 
-  local data = readList(stream, readU1)
-  -- Compress to a u4 block to save memory
-  local compressed = {}
-  for i = 1, #data, 4 do
-    local b1 = data[i] or 0
-    local b2 = data[i + 1] or 0
-    local b3 = data[i + 2] or 0
-    local b4 = data[i + 3] or 0
-    local u4 = b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)
-    table.insert(compressed, u4)
-  end
+  local data, err = readList(stream, readU8)
+  if not data then return nil, err end
+  local compressed = u8BlockToU32Block(data)
 
   return {
     active = active,
@@ -317,13 +346,13 @@ local function readData(stream)
 end
 
 local function readTagType(stream)
-  local subop, err = readU1(stream)
-  if not subop then return false, err end
+  local subop, err = readU8(stream)
+  if not subop then return nil, err end
   if subop ~= 0 then
     return false, "Invalid tag type"
   end
   local typeidx, err = readTypeIdx(stream)
-  if not typeidx then return false, err end
+  if not typeidx then return nil, err end
 
   return {
     typeidx = typeidx
@@ -331,14 +360,14 @@ local function readTagType(stream)
 end
 
 local function skipSection(stream, len)
-  local ok, err = readArr(stream, readU1, len)
-  if not ok then return false, err end
+  local ok, err = readArr(stream, readU8, len)
+  if not ok then return nil, err end
   return {}
 end
 
 local function readTypeSection(stream)
   local types, err = readList(stream, readRectype)
-  if not types then return false, err end
+  if not types then return nil, err end
   return {
     types = types
   }
@@ -346,7 +375,7 @@ end
 
 local function readImportSection(stream)
   local imports, err = readList(stream, readImport)
-  if not imports then return false, err end
+  if not imports then return nil, err end
   return {
     imports = imports
   }
@@ -354,7 +383,7 @@ end
 
 local function readFunctionSection(stream)
   local funcs, err = readList(stream, readTypeIdx)
-  if not funcs then return false, err end
+  if not funcs then return nil, err end
   return {
     funcs = funcs
   }
@@ -362,7 +391,7 @@ end
 
 local function readTableSection(stream)
   local tables, err = readList(stream, readTable)
-  if not tables then return false, err end
+  if not tables then return nil, err end
 
   -- TODO: Support 0x40 0x00
 
@@ -373,7 +402,7 @@ end
 
 local function readMemorySection(stream)
   local memories, err = readList(stream, readMemType)
-  if not memories then return false, err end
+  if not memories then return nil, err end
   return {
     memories = memories
   }
@@ -381,7 +410,7 @@ end
 
 local function readGlobalSection(stream)
   local globals, err = readList(stream, readGlobal)
-  if not globals then return false, err end
+  if not globals then return nil, err end
   return {
     globals = globals
   }
@@ -389,7 +418,7 @@ end
 
 local function readExportSection(stream)
   local exports, err = readList(stream, readExport)
-  if not exports then return false, err end
+  if not exports then return nil, err end
   return {
     exports = exports
   }
@@ -397,15 +426,23 @@ end
 
 local function readElementSection(stream)
   local elems, err = readList(stream, readElem)
-  if not elems then return false, err end
+  if not elems then return nil, err end
   return {
     elements = elems
   }
 end
 
+local function readCodeSection(stream)
+  local codes, err = readList(stream, readCode)
+  if not codes then return nil, err end
+  return {
+    codes = codes
+  }
+end
+
 local function readDataSection(stream)
   local dataSegments, err = readList(stream, readData)
-  if not dataSegments then return false, err end
+  if not dataSegments then return nil, err end
   return {
     dataSegments = dataSegments
   }
@@ -413,7 +450,7 @@ end
 
 local function readTagSection(stream)
   local tags, err = readList(stream, readTagType)
-  if not tags then return false, err end
+  if not tags then return nil, err end
   return {
     tags = tags
   }
@@ -429,20 +466,21 @@ local sectionReaders = {
   [6] = readGlobalSection,
   [7] = readExportSection,
   [9] = readElementSection,
+  [10] = readCodeSection,
   [11] = readDataSection,
   [13] = readTagSection
 }
 
 local function readSection(stream)
-  local type, err = readU1(stream)
-  if not type then return false, err end
+  local type, err = readU8(stream)
+  if not type then return nil, err end
   local len, err = readInt(stream, 32)
-  if not len then return false, err end
+  if not len then return nil, err end
 
   local reader = sectionReaders[type]
   if not reader then reader = sectionReaders[0] end
   local section, err = reader(stream, len)
-  if not section then return false, err end
+  if not section then return nil, err end
 
   section.type = type
   return section
@@ -450,11 +488,11 @@ end
 
 local function readNextSection(stream, sections, expected)
   local section, err = readSection(stream)
-  if not section then return false, err end
+  if not section then return nil, err end
   while section.type == 0 do
     table.insert(sections, section)
     section, err = readSection(stream)
-    if not section then return false, err end
+    if not section then return nil, err end
   end
   table.insert(sections, section)
   if expected ~= nil and expected ~= section.type then
@@ -479,7 +517,7 @@ local function maybeReadNextSection(stream, sections, expected)
   end
 
   local section, err = readSection(stream)
-  if not section then return false, err end
+  if not section then return nil, err end
   table.insert(sections, section)
   assert(expected == section.type)
   return section, true
@@ -488,45 +526,45 @@ end
 local function readModule(stream)
   stream = wrap_stream(stream)
 
-  local magic, err = readU4(stream)
-  if not magic then return false, err end
+  local magic, err = readU32(stream)
+  if not magic then return nil, err end
   if magic ~= 0x0061736D then
     return false, "Magic signature does not match"
   end
 
-  local version, err = readU4(stream)
-  if not version then return false, err end
+  local version, err = readU32(stream)
+  if not version then return nil, err end
   if version ~= 0x01000000 then
     return false, "Only version 1 is supported"
   end
 
   local sections = {}
   local typeSection, err = readNextSection(stream, sections, 1)
-  if not typeSection then return false, err end
+  if not typeSection then return nil, err end
   local importSection, err = readNextSection(stream, sections, 2)
-  if not importSection then return false, err end
+  if not importSection then return nil, err end
   local funcSection, err = readNextSection(stream, sections, 3)
-  if not funcSection then return false, err end
+  if not funcSection then return nil, err end
   local tableSection, err = readNextSection(stream, sections, 4)
-  if not tableSection then return false, err end
-  local memSection, err = readNextSection(stream, sections, 5)
-  if not memSection then return false, err end
+  if not tableSection then return nil, err end
+  local memorySection, err = readNextSection(stream, sections, 5)
+  if not memorySection then return nil, err end
   local tagSection, err = readNextSection(stream, sections, 13)
-  if not tagSection then return false, err end
+  if not tagSection then return nil, err end
   local globalSection, err = readNextSection(stream, sections, 6)
-  if not globalSection then return false, err end
+  if not globalSection then return nil, err end
   local exportSection, err = readNextSection(stream, sections, 7)
-  if not exportSection then return false, err end
+  if not exportSection then return nil, err end
   local startSection, ok, err = maybeReadNextSection(stream, sections, 8)
-  if not ok then return false, err end
+  if not ok then return nil, err end
   local elemSection, err = readNextSection(stream, sections, 9)
-  if not elemSection then return false, err end
+  if not elemSection then return nil, err end
   local dataCntSection, ok, err = maybeReadNextSection(stream, sections, 12)
-  if not ok then return false, err end
+  if not ok then return nil, err end
   local codeSection, err = readNextSection(stream, sections, 10)
-  if not codeSection then return false, err end
+  if not codeSection then return nil, err end
   local dataSection, err = readNextSection(stream, sections, 11)
-  if not dataSection then return false, err end
+  if not dataSection then return nil, err end
   local _, ok, err = maybeReadNextSection(stream, sections, 0)
   if not ok then return err end
 
@@ -536,7 +574,7 @@ local function readModule(stream)
     importSection = importSection,
     funcSection = funcSection,
     tableSection = tableSection,
-    memSection = memSection,
+    memorySection = memorySection,
     tagSection = tagSection,
     globalSection = globalSection,
     exportSection = exportSection,

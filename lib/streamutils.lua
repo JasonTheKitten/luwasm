@@ -2,25 +2,25 @@ local bits = localRequire("lib/bits")
 
 local REACHED_EOF = "Reached end-of-file marker"
 
-local function readU1(stream)
+local function readU8(stream)
   local v = stream:read(1)
   if not v then return false, REACHED_EOF end
   return v:byte()
 end
 
-local function readU2(stream)
-  local b1, err = readU1(stream)
-  if not b1 then return false, err end
-  local b2, err = readU1(stream)
-  if not b2 then return false, err end
+local function readU16(stream)
+  local b1, err = readU8(stream)
+  if not b1 then return nil, err end
+  local b2, err = readU8(stream)
+  if not b2 then return nil, err end
   return bits.shl(b1, 8) + b2
 end
 
-local function readU4(stream)
-  local b1, err = readU2(stream)
-  if not b1 then return false, err end
-  local b2, err = readU2(stream)
-  if not b2 then return false, err end
+local function read32(stream)
+  local b1, err = readU16(stream)
+  if not b1 then return nil, err end
+  local b2, err = readU16(stream)
+  if not b2 then return nil, err end
   return bits.shl(b1, 16) + b2
 end
 
@@ -30,7 +30,7 @@ local function readInt(stream, n)
   local value = 0
   local mul = 1
   for i = 1, n / 7 do
-    local byte = readU1(stream)
+    local byte = readU8(stream)
     if byte >= 128 then
       value = value + (byte - 128) * mul
     else
@@ -90,14 +90,14 @@ end
 
 local function readList(stream, func)
   local len, err = readInt(stream, 32)
-  if not len then return false, err end
+  if not len then return nil, err end
   return readArr(stream, func, len)
 end
 
 return {
-  readU1 = readU1,
-  readU2 = readU2,
-  readU4 = readU4,
+  readU8 = readU8,
+  readU16 = readU16,
+  readU32 = read32,
   readInt = readInt,
   readArr = readArr,
   wrapStream = wrapStream,

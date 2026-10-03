@@ -1,3 +1,7 @@
+local streamutils = localRequire("lib/streamutils")
+
+local readInt = streamutils.readInt
+
 local instr = {}
 
 local function writeInt(tbl, pos, bits, value)
@@ -21,5 +25,15 @@ instr.ref.func.write = function(tbl, pos, idx)
   tbl[pos] = 0xD2
   return writeInt(tbl, pos + 1, 32, idx)
 end
+
+instr.i32 = {}
+instr.i32.const = {}
+instr.i32.const.evaluate = function(stream)
+  return readInt(stream, 32)
+end
+
+instr._lookup = {
+  [0x41] = instr.i32.const
+}
 
 return instr

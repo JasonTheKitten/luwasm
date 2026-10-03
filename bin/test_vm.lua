@@ -58,4 +58,9 @@ local module, err = moduleParser.readModule(testModuleHandle)
 testModuleHandle:close()
 if not module then error(err) end
 
-print(module)
+local vmCreator = localRequire("lib/vm")
+local vm = assert(vmCreator.createVM(module))
+for k, v in pairs(vm.exports) do
+  print(k)
+  if type(v) == "function" then v() end
+end
