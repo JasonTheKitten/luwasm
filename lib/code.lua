@@ -1,44 +1,28 @@
 local streamutils = localRequire("lib/streamutils")
-local valparser = localRequire("lib/valparser")
+local codeparser = localRequire("lib/codeparser")
 local instructions = localRequire("lib/instructions")
 local types = localRequire("lib/types")
 
-local readU8, readList = streamutils.readU8, streamutils.readList
-local readValType = valparser.readValType
-local SYMBOL_BR = instructions.SYMBOL_BR
+local readU8, readInt = streamutils.readU8, streamutils.readInt
+local readNumLocals = codeparser.readNumLocals
+local SYMBOL_BR, SYMBOL_RETURN = instructions.SYMBOL_BR, instructions.SYMBOL_RETURN
 local VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, BLOCK_TYPE_EMPTY
   = types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32, types.BLOCK_TYPE_EMPTY
 
 local function lookupInstr(stream)
   local opcode = readU8(stream)
-  -- TODO: Subops
   local instr = instructions._lookup[opcode]
   if not instr then
     return nil, "Unsupported instruction: " .. string.format("0x%02X", opcode)
   end
-  return instr
-end
-
-local function readLocals(stream)
-  local locals, err = readU8(stream)
-  if not locals then return nil, err end
-
-  local loc, err = readValType(stream)
-  if not loc then return nil, err end
-
-  return locals
-end
-
-local function readNumLocals(stream)
-  local localsList, err = readList(stream, readLocals)
-  if not localsList then return nil, err end
-
-  local numLocals = 0
-  for _, v in ipairs(localsList) do
-    numLocals = numLocals + v
+  if instr._subop then
+    local subopcode = readInt(stream, 32)
+    instr = instr[subopcode]
+    if not instr then
+      return nil, "Unsupported sub-instruction: " .. subopcode
+    end
   end
-
-  return numLocals
+  return instr
 end
 
 local function evaluateNext(stream, context)
@@ -107,6 +91,10 @@ local function evaluateBlock(stream, context, blockType1, blockType2, allowElse)
       ok, err = unwindStack(context.stack, stackArity, outputs)
       if not ok then return nil, err end
       return true, true
+    elseif not ok and type(err) == "table" and err.symbol == SYMBOL_RETURN then
+      local ok, err2 = unwindStack(context.stack, stackArity, outputs)
+      if not ok then return nil, err2 end
+      return nil, err
     else
       err.depth = err.depth - 1
       return nil, err
@@ -149,7 +137,9 @@ local function evaluateFunc(stream, context, functionData)
   frame.frameIndex = frameIndex
 
   local ok, err = evaluate(stream, context)
-  if not ok then return nil, err end
+  if not ok and not (type(err) == "table" and err.symbol == SYMBOL_RETURN) then
+    return nil, err
+  end
 
   context.frame = oldFrame
 

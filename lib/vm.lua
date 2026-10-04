@@ -9,7 +9,7 @@ local function evaluateConstantExpr(expr)
   local memory = memoryLib.createBackedU32Memory(expr.data, expr.len)
   local reader = memoryLib.createMemoryReader(memory)
   local context = codeLib.newContext()
-  return codeLib.evaluateExpr(reader, context)
+  return codeLib.evaluateConstExpr(reader, context)
 end
 
 local function createVM(module)
@@ -23,18 +23,14 @@ local function createVM(module)
 
   local dataSegmentList = module.dataSection and module.dataSection.dataSegments or {}
   for _, v in ipairs(dataSegmentList) do
-    local err
-    local memidx = 0
-    local offset = 0
     if v.active then
-      memidx = v.memidx
-      offset, err = evaluateConstantExpr(v.expr)
-      if not offset then return nil, err end
+      local memidx = v.memidx
+      local ok, offset = evaluateConstantExpr(v.expr)
+      if not ok then return nil, offset end
+      local memory = memories[memidx + 1]
+      local ok, err = memory.writeU32Bytes(v.data, 1, offset, v.datalen)
+      if not ok then return nil, err end
     end
-
-    local memory = memories[memidx + 1]
-    local ok, err = memory.writeU32Bytes(v.data, 1, offset, v.datalen)
-    if not ok then return nil, err end
   end
 
   local function sumArgCount(params)
@@ -98,6 +94,7 @@ local function createVM(module)
     local ok, frameIndex = codeLib.evaluateFunc(
       functionReader, context, functionData)
     functionReader:seek(oldPos)
+    
     if not ok then return nil, frameIndex end
     
     return true, table.unpack(context.stack, frameIndex)
@@ -119,6 +116,8 @@ local function createVM(module)
         local context = codeLib.newContext()
         context.stack = args
         context.frameIndex = #args + 1
+        context.memories = memories
+        context.data = dataSegmentList
         context.functions = functions
         return functions[v.type.idx + 1](context)
       end

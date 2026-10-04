@@ -1,16 +1,19 @@
 local streamutils = localRequire("lib/streamutils")
+local codeparser = localRequire("lib/codeparser")
 local numbers = localRequire("lib/numbers")
 local valparser = localRequire("lib/valparser")
 
-local readInt = streamutils.readInt
-local readBlockType, readFuncIdx, readLocalIdx, readLabelIdx
-  = valparser.readBlockType, valparser.readFuncIdx, valparser.readLocalIdx,
-  valparser.readLabelIdx
+local readSInt = streamutils.readSInt
+local readMemArg = codeparser.readMemArg
+local readBlockType, readFuncIdx, readMemIdx, readDataIdx, readLocalIdx, readLabelIdx
+  = valparser.readBlockType, valparser.readFuncIdx, valparser.readMemIdx,
+  valparser.readDataIdx, valparser.readLocalIdx, valparser.readLabelIdx
 
 local STACK_EMPTY = "Stack is empty"
 local NO_JUMP_POS = "No recorded jump pos"
 
 local SYMBOL_BR = {}
+local SYMBOL_RETURN = {}
 
 local instr = {}
 
@@ -27,6 +30,23 @@ local function writeInt(tbl, pos, bits, value)
   end
 
   return false, "Int too large to fit in bits"
+end
+
+local function unop32(op)
+  local inst = {}
+  function inst.evaluate(_, context)
+    local stack = context.stack
+    local c = table.remove(stack, #stack)
+    if not c then return nil, STACK_EMPTY end
+    local res, err = op(c)
+    if res == nil then return nil, err end
+    stack[#stack+1] = res
+    return true
+  end
+  function inst.skip()
+    return true
+  end
+  return inst
 end
 
 local function binop32(op)
@@ -48,12 +68,79 @@ local function binop32(op)
   return inst
 end
 
+local function testop32(op)
+  return unop32(function(a)
+    local val, err = op(a)
+    if val == nil then return nil, err end
+    return val and 1 or 0
+  end)
+end
+
 local function relop32(op)
   return binop32(function(a, b)
     local val, err = op(a, b)
     if val == nil then return nil, err end
     return val and 1 or 0
   end)
+end
+
+local function load32(size, signed)
+  local inst = {}
+  function inst.evaluate(stream, context)
+    local _, memidx, pos = readMemArg(stream)
+    local memory = context.memories[memidx + 1]
+    if not memory then
+      return nil, "Memory not defined"
+    end
+
+    local stack = context.stack
+    local i = table.remove(stack, #stack)
+    if not i then return nil, STACK_EMPTY end
+
+    local val = memory[size](i + pos)
+
+    if signed then
+      if size == "u8" and val >= 0x80 then
+        val = val + 0xFFFFFF00
+      elseif size == "u16" and val >= 0x8000 then
+        val = val + 0xFFFF0000
+      end
+    end
+
+    stack[#stack + 1] = val
+    return true
+  end
+
+  function inst.skip(stream)
+    return readMemArg(stream)
+  end
+
+  return inst
+end
+
+local function store32(sizeMethod)
+  local inst = {}
+  function inst.evaluate(stream, context)
+    local _, memidx, pos = readMemArg(stream)
+    local memory = context.memories[memidx + 1]
+    if not memory then
+      return nil, "Memory not defined"
+    end
+
+    local stack = context.stack
+    local val = table.remove(stack, #stack)
+    if not val then return nil, STACK_EMPTY end
+    local i = table.remove(stack, #stack)
+    if not i then return nil, STACK_EMPTY end
+    memory[sizeMethod](i + pos, val)
+
+    return true
+  end
+  function inst.skip(stream)
+    return readMemArg(stream)
+  end
+
+  return inst
 end
 
 instr._ = {}
@@ -157,8 +244,8 @@ instr["if"].blockEnds = { 0x05, 0x0B }
 
 instr.br = {}
 instr.br.evaluate = function(stream, context)
-  local depth = readLabelIdx(stream)
-  if not depth then return nil, "Failed to read depth" end
+  local depth, err = readLabelIdx(stream)
+  if not depth then return nil, err end
   return nil, { symbol = SYMBOL_BR, depth = depth }
 end
 instr.br.skip = function(stream)
@@ -167,8 +254,8 @@ end
 
 instr.br_if = {}
 instr.br_if.evaluate = function(stream, context)
-  local depth = readLabelIdx(stream)
-  if not depth then return nil, "Failed to read depth" end
+  local depth, err = readLabelIdx(stream)
+  if not depth then return nil, err end
   local stack = context.stack
   local c = table.remove(stack, #stack)
   if not c then return nil, STACK_EMPTY end
@@ -179,6 +266,14 @@ instr.br_if.evaluate = function(stream, context)
 end
 instr.br_if.skip = function(stream)
   return readLabelIdx(stream)
+end
+
+instr["return"] = {}
+instr["return"].evaluate = function()
+  return nil, { symbol = SYMBOL_RETURN }
+end
+instr["return"].skip = function()
+  return true
 end
 
 instr.call = {}
@@ -231,23 +326,70 @@ instr.ref.func.write = function(tbl, pos, idx)
 end
 
 instr.i32 = {}
+
+instr.i32.load = load32("u32", false)
+instr.i32.load8_s = load32("u8", true)
+instr.i32.load8_u = load32("u8", false)
+instr.i32.load16_s = load32("u16", true)
+instr.i32.load16_u = load32("u16", false)
+instr.i32.store = store32("writeU32")
+instr.i32.store8 = store32("writeU8")
+instr.i32.store16 = store32("writeU16")
+
+instr.memory = {}
+instr.memory.init = {}
+instr.memory.init.evaluate = function(stream, context)
+  local dataidx, err = readDataIdx(stream)
+  if not dataidx then return nil, err end
+  local memidx, err = readMemIdx(stream)
+  if not memidx then return nil, err end
+
+  local stack = context.stack
+  local len = table.remove(stack, #stack)
+  local dataOffset = table.remove(stack, #stack)
+  local memOffset = table.remove(stack, #stack)
+
+  local memory = context.memories[memidx + 1]
+  local data = context.data[dataidx + 1]
+  if dataOffset + len > data.datalen then
+    return nil, "Data access out-of-bounds"
+  end
+
+  local ok, err = memory.writeU32Bytes(data.data, dataOffset + 1, memOffset, len)
+  if not ok then return false, err end
+
+  return true
+end
+instr.memory.init.skip = function(stream)
+  local dataidx, err = readDataIdx(stream)
+  if not dataidx then return nil, err end
+  return readMemIdx(stream)
+end
+
 instr.i32.const = {}
 instr.i32.const.evaluate = function(stream, context)
   local stack = context.stack
-  local val, err = readInt(stream, 32)
+  local val, err = readSInt(stream, 32)
   if not val then return nil, err end
   stack[#stack + 1] = val
   return true
 end
 instr.i32.const.skip = function(stream, context)
-  return readInt(stream, 32)
+  return readSInt(stream, 32)
 end
 
+instr.i32.eqz = testop32(numbers.i32.eqz)
+instr.i32.eq = relop32(numbers.i32.eq)
 instr.i32.lt_s = relop32(numbers.i32.lt_s)
 instr.i32.gt_s = relop32(numbers.i32.gt_s)
 
 instr.i32.add = binop32(numbers.i32.add)
 instr.i32.sub = binop32(numbers.i32.sub)
+
+local memtblSubOps = {
+  _subop = true,
+  [8] = instr.memory.init
+}
 
 instr._lookup = {
   [0x00] = instr.unreachable,
@@ -259,16 +401,29 @@ instr._lookup = {
   [0x0B] = instr._.block_end,
   [0x0C] = instr.br,
   [0x0D] = instr.br_if,
+  [0x0F] = instr["return"],
   [0x10] = instr.call,
   [0x20] = instr["local"].get,
   [0x21] = instr["local"].set,
+  [0x28] = instr.i32.load,
+  [0x2C] = instr.i32.load8_s,
+  [0x2D] = instr.i32.load8_u,
+  [0x2E] = instr.i32.load16_s,
+  [0x2F] = instr.i32.load16_u,
+  [0x36] = instr.i32.store,
+  [0x3A] = instr.i32.store8,
+  [0x3B] = instr.i32.store16,
   [0x41] = instr.i32.const,
+  [0x45] = instr.i32.eqz,
+  [0x46] = instr.i32.eq,
   [0x48] = instr.i32.lt_s,
   [0x4A] = instr.i32.gt_s,
   [0x6A] = instr.i32.add,
-  [0x6B] = instr.i32.sub
+  [0x6B] = instr.i32.sub,
+  [0xFC] = memtblSubOps
 }
 
 instr.SYMBOL_BR = SYMBOL_BR
+instr.SYMBOL_RETURN = SYMBOL_RETURN
 
 return instr

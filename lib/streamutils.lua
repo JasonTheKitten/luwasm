@@ -30,7 +30,7 @@ end
 local function readInt(stream, n)
   local value = 0
   local mul = 1
-  for _ = 1, n / 7 do
+  for _ = 1, math.ceil(n / 7) do
     local byte = readU8(stream)
     if byte >= 128 then
       value = value + (byte - 128) * mul

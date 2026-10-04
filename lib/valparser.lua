@@ -66,6 +66,7 @@ end
 local readTypeIdx = readIdx
 local readFuncIdx = readIdx
 local readMemIdx = readIdx
+local readDataIdx = readIdx
 local readLocalIdx = readIdx
 local readLabelIdx = readIdx
 
@@ -96,6 +97,7 @@ return {
   readTypeIdx = readTypeIdx,
   readFuncIdx = readFuncIdx,
   readMemIdx = readMemIdx,
+  readDataIdx = readDataIdx,
   readExternIdx = readExternIdx,
   readLocalIdx = readLocalIdx,
   readLabelIdx = readLabelIdx
