@@ -8,10 +8,9 @@ local function createBackedU32Memory(backingArr, u8Size)
     u8Size = u8Size
   }
   
-  local MEM_OOB = "Memory access out-of-bounds: max " .. u8Size
   function memory.u8(idx)
     if idx < 0 or idx >= u8Size then
-      return false, MEM_OOB
+      return nil, MEM_OOB
     end
 
     local refByte = backingArr[math.floor(idx / 4) + 1] or 0
@@ -22,7 +21,7 @@ local function createBackedU32Memory(backingArr, u8Size)
 
   function memory.writeU8(pos, val)
     if pos < 0 or pos >= u8Size then
-      return false, MEM_OOB
+      return nil, MEM_OOB
     end
 
     local wordIdx = math.floor(pos / 4) + 1
@@ -43,7 +42,7 @@ local function createBackedU32Memory(backingArr, u8Size)
     if not lh then return nil, err end
     local hh, err = memory.u8(idx + 1)
     if not hh then return nil, err end
-    return bits.shl(hh, 8) + lh
+    return hh * 0x100 + lh
   end
 
   function memory.writeU16(pos, val)
@@ -54,7 +53,7 @@ local function createBackedU32Memory(backingArr, u8Size)
 
   function memory.u32(idx)
     if idx < 0 or idx + 3 >= u8Size then
-      return false, MEM_OOB
+      return nil, MEM_OOB
     end
 
     if idx % 4 == 0 then
@@ -64,13 +63,13 @@ local function createBackedU32Memory(backingArr, u8Size)
       if not low then return nil, err end
       local high, err = memory.u16(idx + 2)
       if not high then return nil, err end
-      return bits.shl(high, 16) + low
+      return high * 0x10000 + low
     end
   end
 
   function memory.writeU32(pos, val)
     if pos < 0 or pos + 3 >= u8Size then
-      return false, MEM_OOB
+      return nil, MEM_OOB
     end
 
     if pos % 4 == 0 then
@@ -104,7 +103,7 @@ local function createBackedU32Memory(backingArr, u8Size)
       or srcpos < 1 or (srcpos - 1) + len > #src * 4
       or destpos < 0 or destpos + len > u8Size
     then
-      return false, MEM_OOB
+      return nil, MEM_OOB
     end
 
     local i = 0
@@ -149,7 +148,7 @@ local function createBackedU32Memory(backingArr, u8Size)
       len < 0
       or srcpos < 0 or (srcSize and srcpos + len > srcSize)
       or destpos < 0 or destpos + len > u8Size then
-      return false, MEM_OOB
+      return nil, MEM_OOB
     end
 
     local i = 0
@@ -160,12 +159,12 @@ local function createBackedU32Memory(backingArr, u8Size)
 
       if rem >= 4 then
         local val, err = srcMem.u32(currSrc)
-        if val == false then return false, err end
+        if val == false then return nil, err end
         memory.writeU32(currDest, val)
         i = i + 4
       else
         local val, err = srcMem.u8(currSrc)
-        if val == false then return false, err end
+        if val == false then return nil, err end
         memory.writeU8(currDest, val)
         i = i + 1
       end
@@ -179,7 +178,7 @@ local function createBackedU32Memory(backingArr, u8Size)
       or srcpos < 1 or (srcpos - 1) + len > #srcStr
       or destpos < 0 or destpos + len > u8Size
     then
-      return false, MEM_OOB
+      return nil, MEM_OOB
     end
 
     local i = 0

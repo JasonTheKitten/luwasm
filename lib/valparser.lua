@@ -2,9 +2,13 @@ local streamutils = localRequire("lib/streamutils")
 local types = localRequire("lib/types")
 
 local readU8, readInt, readSInt = streamutils.readU8, streamutils.readInt, streamutils.readSInt
-local COMP_TYPE_FUNC, COMP_TYPE_MEM, VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, BLOCK_TYPE_EMPTY
-  = types.COMP_TYPE_FUNC, types.COMP_TYPE_FUNC,
-  types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32, types.BLOCK_TYPE_EMPTY
+local
+  COMP_TYPE_FUNC, COMP_TYPE_MEM, BLOCK_TYPE_EMPTY,
+  VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, 
+  HTYPE_EXN
+  = types.COMP_TYPE_FUNC, types.COMP_TYPE_FUNC, types.BLOCK_TYPE_EMPTY,
+  types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32,
+  types.HTYPE_EXN
 
 local function MERGE_TABLES(...)
   local new = {}
@@ -24,8 +28,12 @@ local NUM_TYPES = {
   [VTYPE_I32] = VTYPE_I32
 }
 
+local HEAP_TYPES = {
+  [HTYPE_EXN] = HTYPE_EXN
+}
+
 -- TODO: Other types
-local VAL_TYPES = MERGE_TABLES(NUM_TYPES)
+local VAL_TYPES = MERGE_TABLES(NUM_TYPES, HEAP_TYPES)
 
 local function readValType(stream)
   -- TODO: Support other options
@@ -66,6 +74,7 @@ end
 local readTypeIdx = readIdx
 local readFuncIdx = readIdx
 local readMemIdx = readIdx
+local readGlobalIdx = readIdx
 local readDataIdx = readIdx
 local readLocalIdx = readIdx
 local readLabelIdx = readIdx
@@ -97,6 +106,7 @@ return {
   readTypeIdx = readTypeIdx,
   readFuncIdx = readFuncIdx,
   readMemIdx = readMemIdx,
+  readGlobalIdx = readGlobalIdx,
   readDataIdx = readDataIdx,
   readExternIdx = readExternIdx,
   readLocalIdx = readLocalIdx,

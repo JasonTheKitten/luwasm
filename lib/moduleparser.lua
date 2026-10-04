@@ -84,7 +84,7 @@ local readRectype
 function readRectype(stream)
   -- TODO: Support other options
   local comptype, err = readComptype(stream)
-  if not comptype then return err end
+  if not comptype then return nil, err end
   return {
     types = {{
       comptype
@@ -444,7 +444,7 @@ local function maybeReadNextSection(stream, sections, expected)
   end
 
   local section, err = readSection(stream)
-  if not section then return nil, err end
+  if not section then return nil, false, err end
   table.insert(sections, section)
   assert(expected == section.type)
   return section, true

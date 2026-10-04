@@ -4,6 +4,7 @@ local VTYPE_F64 = 0x7C
 local VTYPE_F32 = 0x7D
 local VTYPE_I64 = 0x7E
 local VTYPE_I32 = 0x7F
+local HTYPE_EXN = 0x69
 local BLOCK_TYPE_EMPTY = 0x80
 
 return {
@@ -13,5 +14,6 @@ return {
   VTYPE_F32 = VTYPE_F32,
   VTYPE_I64 = VTYPE_I64,
   VTYPE_I32 = VTYPE_I32,
+  HTYPE_EXN = HTYPE_EXN,
   BLOCK_TYPE_EMPTY = BLOCK_TYPE_EMPTY
 }

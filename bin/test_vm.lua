@@ -60,4 +60,4 @@ if not module then error(err) end
 
 local vmCreator = localRequire("lib/vm")
 local vm = assert(vmCreator.createVM(module))
-print(assert(vm.exports.test_multi_memory()))
+print(assert(vm.exports.__wasm_call_ctors()))

@@ -62,12 +62,28 @@ local function createVM(module)
     end
   end
 
+  local globals = {}
+  local globalsList = module.globalSection and module.globalSection.globals or {}
+  for k, v in ipairs(globalsList) do
+    globals[k] = {
+      value = 0, -- TODO: But what if it is 64-bit?
+      info = v
+    }
+  end
+
   local codesList = module.codeSection and module.codeSection.codes or {}
 
   local functions = {}
+  local importsList = module.importSection and module.importSection.imports or {}
+  for i=1, #importsList do
+    functions[i] = function()
+      return nil, "Import functions are not yet implemented"
+    end
+  end
+
   local functionsData = {}
   local function runInterpretedFunction(idx, context)
-    -- TODO: Setup context
+    print("Run", idx + #importsList - 1)
     local functionData = functionsData[idx]
     if functionData.reader == nil then
       local code = codesList[idx]
@@ -101,7 +117,8 @@ local function createVM(module)
   end
 
   for k in ipairs(codesList) do
-    functions[k] = function(context)
+    local idx = #importsList + k
+    functions[idx] = function(context)
       return runInterpretedFunction(k, context)
     end
     functionsData[k] = {}
@@ -115,9 +132,10 @@ local function createVM(module)
         local args = {...}
         local context = codeLib.newContext()
         context.stack = args
-        context.frameIndex = #args + 1
+        context.frame.frameIndex = #args + 1
         context.memories = memories
         context.data = dataSegmentList
+        context.globals = globals
         context.functions = functions
         return functions[v.type.idx + 1](context)
       end

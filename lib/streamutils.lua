@@ -25,44 +25,62 @@ local function read32(stream)
   return bits.shl(b1, 16) + b2
 end
 
--- TODO: This may be wrong for 64 bit values due to Lua quirks
--- Need to refactor to return low and high halves
-local function readInt(stream, n)
-  local value = 0
-  local mul = 1
+local function readLEB(stream, n)
+  local low, high = 0, 0
+  local shift = 0
+
   for _ = 1, math.ceil(n / 7) do
     local byte = readU8(stream)
-    if byte >= 128 then
-      value = value + (byte - 128) * mul
+    local payload = byte >= 128 and (byte - 128) or byte
+
+    if n < 33 or shift < 28 then
+      low = low + payload * (2 ^ shift)
+    elseif shift == 28 then
+      low = low + (payload % 16) * (2 ^ 28)
+      high = high + math.floor(payload / 16)
     else
-      value = value + byte * mul
-      return value
+      high = high + payload * (2 ^ (shift - 32))
     end
-    mul = mul * 128
+
+    shift = shift + 7
+    if byte < 128 then
+      return low, high, byte, shift
+    end
   end
 
   return false, LARGE_INT
 end
 
+local function readInt(stream, n)
+  local low, high = readLEB(stream, n)
+  if not low then return false, LARGE_INT end
+  if n < 33 then return low end
+  return low, high
+end
+
 local function readSInt(stream, n)
-  local value = 0
-  local mul = 1
-  for i = 1, math.ceil(n / 7) do
-    local byte = readU8(stream)
-    if byte >= 128 then
-      value = value + (byte - 128) * mul
-    else
-      value = value + byte * mul
-      if byte >= 64 then
-        mul = mul * 128
-        value = value - mul
+  local low, high, byte, shift = readLEB(stream, n)
+  if not low then return false, LARGE_INT end
+
+  if byte >= 64 then
+    if n < 33 then
+      low = low - (2 ^ shift)
+    elseif shift <= 32 then
+      low = low - (2 ^ shift)
+      if low < 0 then
+        low = low + 0x100000000
+        high = (high - 1) % 0x100000000
       end
-      return value
+    else
+      high = high - (2 ^ (shift - 32))
+      if high < 0 then
+        high = high + 0x100000000
+      end
     end
-    mul = mul * 128
   end
 
-  return false, LARGE_INT
+  if n < 33 then return low end
+  return low, high
 end
 
 local function readArr(stream, f, num)

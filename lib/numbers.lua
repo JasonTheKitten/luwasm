@@ -16,6 +16,9 @@ end
 numbers.i32.eq = function(a, b)
   return a == b
 end
+numbers.i32.ne = function(a, b)
+  return a ~= b
+end
 numbers.i32.lt_s = function(a, b)
   return toSigned32(a) < toSigned32(b)
 end
