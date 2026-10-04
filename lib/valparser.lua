@@ -1,7 +1,7 @@
 local streamutils = localRequire("lib/streamutils")
 local types = localRequire("lib/types")
 
-local readU8, readInt = streamutils.readU8, streamutils.readInt
+local readU8, readInt, readSInt = streamutils.readU8, streamutils.readInt, streamutils.readSInt
 local COMP_TYPE_FUNC, COMP_TYPE_MEM, VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, BLOCK_TYPE_EMPTY
   = types.COMP_TYPE_FUNC, types.COMP_TYPE_FUNC,
   types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32, types.BLOCK_TYPE_EMPTY
@@ -40,12 +40,21 @@ local function readValType(stream)
 end
 
 local function readBlockType(stream)
-  if stream:peek(1) == 0x40 then
+  local pk = stream:peek(1)
+  if pk == 0x40 then
+    stream:read(1)
     return BLOCK_TYPE_EMPTY
-  else
+  elseif VAL_TYPES[pk] then
     return readValType(stream)
+  else
+    -- TODO: Ensure that it is signed
+    local i, err = readSInt(stream, 33)
+    if not i then return err end
+    if i < 0 then
+      return nil, "Block typeidx must be positive"
+    end
+    return true, i
   end
-  -- TODO: Support s33
 end
 
 ---
@@ -58,6 +67,7 @@ local readTypeIdx = readIdx
 local readFuncIdx = readIdx
 local readMemIdx = readIdx
 local readLocalIdx = readIdx
+local readLabelIdx = readIdx
 
 local function readExternIdx(stream)
   local subop, err = readU8(stream)
@@ -87,5 +97,6 @@ return {
   readFuncIdx = readFuncIdx,
   readMemIdx = readMemIdx,
   readExternIdx = readExternIdx,
-  readLocalIdx = readLocalIdx
+  readLocalIdx = readLocalIdx,
+  readLabelIdx = readLabelIdx
 }

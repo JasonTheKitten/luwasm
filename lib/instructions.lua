@@ -3,11 +3,14 @@ local numbers = localRequire("lib/numbers")
 local valparser = localRequire("lib/valparser")
 
 local readInt = streamutils.readInt
-local readBlockType, readFuncIdx, readLocalIdx
-  = valparser.readBlockType, valparser.readFuncIdx, valparser.readLocalIdx
+local readBlockType, readFuncIdx, readLocalIdx, readLabelIdx
+  = valparser.readBlockType, valparser.readFuncIdx, valparser.readLocalIdx,
+  valparser.readLabelIdx
 
 local STACK_EMPTY = "Stack is empty"
 local NO_JUMP_POS = "No recorded jump pos"
+
+local SYMBOL_BR = {}
 
 local instr = {}
 
@@ -71,17 +74,63 @@ instr._["else"].skip = function(stream)
 end
 instr._["else"].blockEnds = { 0x0B }
 
+instr.unreachable = {}
+instr.unreachable.evaluate = function()
+  return nil, "Unreachable instruction reached"
+end
+instr.unreachable.skip = function()
+  return true
+end
+
+instr.nop = {}
+instr.nop.evaluate = function()
+  return true
+end
+instr.nop.skip = function()
+  return true
+end
+
+instr.block = {}
+instr.block.evaluate = function(stream, context)
+  local blockType1, blockType2 = readBlockType(stream)
+  if not blockType1 then return nil, blockType2 end
+  local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2)
+  if not ok then return nil, err end
+  return true
+end
+instr.block.skip = function(stream)
+  return readBlockType(stream)
+end
+instr.block.blockEnds = { 0x0B }
+
+instr.loop = {}
+instr.loop.evaluate = function(stream, context)
+  local blockType1, blockType2 = readBlockType(stream)
+  if not blockType1 then return nil, blockType2 end
+  local startPos = stream:pos()
+  while true do
+    local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2)
+    if not ok then return nil, err end
+    if err == false then return true end
+    stream:seek(startPos)
+  end
+end
+instr.loop.skip = function(stream)
+  return readBlockType(stream)
+end
+instr.loop.blockEnds = { 0x0B }
+
 instr["if"] = {}
 instr["if"].evaluate = function(stream, context)
-  local ok, err = readBlockType(stream)
-  if not ok then return nil, err end
+  local blockType1, blockType2 = readBlockType(stream)
+  if not blockType1 then return nil, blockType2 end
   
   local stack = context.stack
   local c = table.remove(stack, #stack)
   if not c then return nil, STACK_EMPTY end
   if c ~= 0 then
-    ok, err = context.evaluate(stream, context, true)
-    if not ok then return err end
+    local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2, true)
+    if not ok then return nil, err end
     local jumpPos = context.frame.jumpMap[stream:pos()]
     if jumpPos then
       stream:seek(jumpPos + 1)
@@ -94,8 +143,8 @@ instr["if"].evaluate = function(stream, context)
     if not elseOp then return nil, err end
 
     if elseOp:byte() == 0x05 then
-      ok, err = context.evaluate(stream, context)
-      if not ok then return err end
+      local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2)
+      if not ok then return nil, err end
     end
   end
 
@@ -105,6 +154,32 @@ instr["if"].skip = function(stream)
   return readBlockType(stream)
 end
 instr["if"].blockEnds = { 0x05, 0x0B }
+
+instr.br = {}
+instr.br.evaluate = function(stream, context)
+  local depth = readLabelIdx(stream)
+  if not depth then return nil, "Failed to read depth" end
+  return nil, { symbol = SYMBOL_BR, depth = depth }
+end
+instr.br.skip = function(stream)
+  return readLabelIdx(stream)
+end
+
+instr.br_if = {}
+instr.br_if.evaluate = function(stream, context)
+  local depth = readLabelIdx(stream)
+  if not depth then return nil, "Failed to read depth" end
+  local stack = context.stack
+  local c = table.remove(stack, #stack)
+  if not c then return nil, STACK_EMPTY end
+  if c ~= 0 then
+    return nil, { symbol = SYMBOL_BR, depth = depth }
+  end
+  return true
+end
+instr.br_if.skip = function(stream)
+  return readLabelIdx(stream)
+end
 
 instr.call = {}
 instr.call.evaluate = function(stream, context)
@@ -135,6 +210,19 @@ instr["local"].get.skip = function(stream)
   return readLocalIdx(stream)
 end
 
+instr["local"].set = {}
+instr["local"].set.evaluate = function(stream, context)
+  local localIdx = readLocalIdx(stream)
+  local stack = context.stack
+  local val = table.remove(stack, #stack)
+  if not val then return nil, STACK_EMPTY end
+  context.frame.locals[localIdx + 1] = val
+  return true
+end
+instr["local"].set.skip = function(stream)
+  return readLocalIdx(stream)
+end
+
 instr.ref = {}
 instr.ref.func = {}
 instr.ref.func.write = function(tbl, pos, idx)
@@ -156,20 +244,31 @@ instr.i32.const.skip = function(stream, context)
 end
 
 instr.i32.lt_s = relop32(numbers.i32.lt_s)
+instr.i32.gt_s = relop32(numbers.i32.gt_s)
 
 instr.i32.add = binop32(numbers.i32.add)
 instr.i32.sub = binop32(numbers.i32.sub)
 
 instr._lookup = {
+  [0x00] = instr.unreachable,
+  [0x01] = instr.nop,
+  [0x02] = instr.block,
+  [0x03] = instr.loop,
   [0x04] = instr["if"],
   [0x05] = instr._["else"],
   [0x0B] = instr._.block_end,
+  [0x0C] = instr.br,
+  [0x0D] = instr.br_if,
   [0x10] = instr.call,
   [0x20] = instr["local"].get,
+  [0x21] = instr["local"].set,
   [0x41] = instr.i32.const,
   [0x48] = instr.i32.lt_s,
+  [0x4A] = instr.i32.gt_s,
   [0x6A] = instr.i32.add,
   [0x6B] = instr.i32.sub
 }
+
+instr.SYMBOL_BR = SYMBOL_BR
 
 return instr

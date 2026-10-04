@@ -1,6 +1,7 @@
 local bits = localRequire("lib/bits")
 
 local REACHED_EOF = "Reached end-of-file marker"
+local LARGE_INT = "Int value too large"
 
 local function readU8(stream)
   local v = stream:read(1)
@@ -29,7 +30,7 @@ end
 local function readInt(stream, n)
   local value = 0
   local mul = 1
-  for i = 1, n / 7 do
+  for _ = 1, n / 7 do
     local byte = readU8(stream)
     if byte >= 128 then
       value = value + (byte - 128) * mul
@@ -40,7 +41,28 @@ local function readInt(stream, n)
     mul = mul * 128
   end
 
-  return false, "Int value too large"
+  return false, LARGE_INT
+end
+
+local function readSInt(stream, n)
+  local value = 0
+  local mul = 1
+  for i = 1, math.ceil(n / 7) do
+    local byte = readU8(stream)
+    if byte >= 128 then
+      value = value + (byte - 128) * mul
+    else
+      value = value + byte * mul
+      if byte >= 64 then
+        mul = mul * 128
+        value = value - mul
+      end
+      return value
+    end
+    mul = mul * 128
+  end
+
+  return false, LARGE_INT
 end
 
 local function readArr(stream, f, num)
@@ -99,6 +121,7 @@ return {
   readU16 = readU16,
   readU32 = read32,
   readInt = readInt,
+  readSInt = readSInt,
   readArr = readArr,
   wrapStream = wrapStream,
   readList = readList

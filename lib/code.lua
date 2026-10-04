@@ -1,18 +1,44 @@
 local streamutils = localRequire("lib/streamutils")
 local valparser = localRequire("lib/valparser")
 local instructions = localRequire("lib/instructions")
+local types = localRequire("lib/types")
 
-local readU8 = streamutils.readU8
+local readU8, readList = streamutils.readU8, streamutils.readList
 local readValType = valparser.readValType
+local SYMBOL_BR = instructions.SYMBOL_BR
+local VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, BLOCK_TYPE_EMPTY
+  = types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32, types.BLOCK_TYPE_EMPTY
 
 local function lookupInstr(stream)
   local opcode = readU8(stream)
   -- TODO: Subops
   local instr = instructions._lookup[opcode]
   if not instr then
-    return nil, "Unsupported instruction: " .. opcode
+    return nil, "Unsupported instruction: " .. string.format("0x%02X", opcode)
   end
   return instr
+end
+
+local function readLocals(stream)
+  local locals, err = readU8(stream)
+  if not locals then return nil, err end
+
+  local loc, err = readValType(stream)
+  if not loc then return nil, err end
+
+  return locals
+end
+
+local function readNumLocals(stream)
+  local localsList, err = readList(stream, readLocals)
+  if not localsList then return nil, err end
+
+  local numLocals = 0
+  for _, v in ipairs(localsList) do
+    numLocals = numLocals + v
+  end
+
+  return numLocals
 end
 
 local function evaluateNext(stream, context)
@@ -41,6 +67,58 @@ local function evaluate(stream, context, allowElse)
   return true
 end
 
+local function determineBlockIO(context, blockType1, blockType2)
+  local inputs, outputs = 0, 0
+  if blockType1 == true then
+    return nil, "blockidx type not implemented"
+  elseif blockType1 == BLOCK_TYPE_EMPTY then
+    inputs, outputs = 0, 0
+  elseif blockType1 == VTYPE_I32 or blockType1 == VTYPE_F32 then
+    inputs, outputs = 0, 1
+  elseif blockType1 == VTYPE_I64 or blockType1 == VTYPE_F64 then
+    inputs, outputs = 0, 2
+  end
+  return inputs, outputs
+end
+
+local function unwindStack(stack, startIdx, outputs)
+  local numToRemove = #stack - startIdx - outputs + 1
+  if numToRemove < 0 then
+    return nil, "Stack underflow"
+  end
+  for _=1, numToRemove do
+    table.remove(stack, startIdx)
+  end
+  return true
+end
+
+local function evaluateBlock(stream, context, blockType1, blockType2, allowElse)
+  local inputs, outputs = determineBlockIO(context, blockType1, blockType2)
+  local stackArity = #context.stack + 1 - inputs
+  local startPos = stream:pos()
+  local ok, err = evaluate(stream, context, allowElse)
+  if not ok and type(err) == "table" and err.symbol == SYMBOL_BR then
+    if err.depth == 0 then
+      local jumpPos = context.frame.jumpMap[startPos]
+      if not jumpPos then
+        return false, "No recorded jump pos"
+      end
+      stream:seek(jumpPos + 1)
+      ok, err = unwindStack(context.stack, stackArity, outputs)
+      if not ok then return nil, err end
+      return true, true
+    else
+      err.depth = err.depth - 1
+      return nil, err
+    end
+  end
+  if not ok then return nil, err end
+
+  ok, err = unwindStack(context.stack, stackArity, outputs)
+  if not ok then return nil, err end
+  return true, false
+end
+
 local function evaluateConstExpr(stream, context)
   local ok, err = evaluate(stream, context)
   if not ok then return nil, err end
@@ -49,13 +127,7 @@ local function evaluateConstExpr(stream, context)
 end
 
 local function evaluateFunc(stream, context, functionData)
-  local locals, err = readU8(stream)
-  if not locals then return nil, err end
-
-  for i=1, locals do
-    local loc, err = readValType(stream)
-    if not loc then return nil, err end
-  end
+  local numLocals = readNumLocals(stream)
 
   local oldFrame = context.frame
   local frame = {
@@ -68,6 +140,9 @@ local function evaluateFunc(stream, context, functionData)
   local cpyStart = #context.stack - numArgs + 1
   for i=1, numArgs do
     frame.locals[i] = table.remove(context.stack, cpyStart)
+  end
+  for i=1, numLocals do
+    table.insert(frame.locals, 0)
   end
 
   local frameIndex = #context.stack + 1
@@ -82,15 +157,7 @@ local function evaluateFunc(stream, context, functionData)
 end
 
 local function generateJumpMap(stream)
-  local locals, err = readU8(stream)
-  if not locals then return nil, err end
-
-  for i=1, locals do
-    local loc, err = readValType(stream)
-    if not loc then return nil, err end
-  end
-
-  --
+  readNumLocals(stream)
 
   local jumpMap = {}
   local sourceMap = {}
@@ -126,7 +193,7 @@ end
 
 local function newContext()
   return {
-    evaluate = evaluate,
+    evaluateBlock = evaluateBlock,
     stack = {},
     functions = {},
     frame = {

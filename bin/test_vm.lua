@@ -60,4 +60,6 @@ if not module then error(err) end
 
 local vmCreator = localRequire("lib/vm")
 local vm = assert(vmCreator.createVM(module))
-print(assert(vm.exports.fib(8)))
+for i=1, 20 do
+  print(assert(vm.exports.fib(i)))
+end
