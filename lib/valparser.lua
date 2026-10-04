@@ -2,9 +2,9 @@ local streamutils = localRequire("lib/streamutils")
 local types = localRequire("lib/types")
 
 local readU8, readInt = streamutils.readU8, streamutils.readInt
-local COMP_TYPE_FUNC, COMP_TYPE_MEM, VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32
+local COMP_TYPE_FUNC, COMP_TYPE_MEM, VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, BLOCK_TYPE_EMPTY
   = types.COMP_TYPE_FUNC, types.COMP_TYPE_FUNC,
-  types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32
+  types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32, types.BLOCK_TYPE_EMPTY
 
 local function MERGE_TABLES(...)
   local new = {}
@@ -37,6 +37,15 @@ local function readValType(stream)
   end
 
   return type
+end
+
+local function readBlockType(stream)
+  if stream:peek(1) == 0x40 then
+    return BLOCK_TYPE_EMPTY
+  else
+    return readValType(stream)
+  end
+  -- TODO: Support s33
 end
 
 ---
@@ -73,6 +82,7 @@ end
 
 return {
   readValType = readValType,
+  readBlockType = readBlockType,
   readTypeIdx = readTypeIdx,
   readFuncIdx = readFuncIdx,
   readMemIdx = readMemIdx,

@@ -83,13 +83,22 @@ local function createVM(module)
         return nil, "Type does not exist"
       end
       functionData.numArgs = type.numArgs
+      
+      local jumpMap, sourceMap = codeLib.generateJumpMap(functionData.reader)
+      if not jumpMap then return nil, sourceMap end
+
+      functionData.jumpMap = jumpMap
+      functionData.sourceMap = sourceMap
     end
     local functionReader = functionData.reader
+    -- Needed to avoid recursion from destroying the position
+    local oldPos = functionReader:pos()
     functionReader:seek(0)
     
     local ok, frameIndex = codeLib.evaluateFunc(
-      functionReader, context, functionData.numArgs)
-    if not ok then return false, frameIndex end
+      functionReader, context, functionData)
+    functionReader:seek(oldPos)
+    if not ok then return nil, frameIndex end
     
     return true, table.unpack(context.stack, frameIndex)
   end
@@ -110,6 +119,7 @@ local function createVM(module)
         local context = codeLib.newContext()
         context.stack = args
         context.frameIndex = #args + 1
+        context.functions = functions
         return functions[v.type.idx + 1](context)
       end
     elseif v.type.type == COMP_TYPE_MEM then

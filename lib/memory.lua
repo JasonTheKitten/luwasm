@@ -8,6 +8,7 @@ local function createBackedU32Memory(backingArr, u8Size)
     u8Size = u8Size
   }
   
+  local MEM_OOB = "Memory access out-of-bounds: max " .. u8Size
   function memory.u8(idx)
     if idx < 0 or idx >= u8Size then
       return false, MEM_OOB
@@ -237,6 +238,9 @@ local function createMemoryReader(memory)
   end
   function reader:seek(idx)
     pos = idx
+  end
+  function reader:pos()
+    return pos
   end
 
   return reader
