@@ -1,41 +1,23 @@
 local streamutils = localRequire("lib/streamutils")
+local valparser = localRequire("lib/valparser")
 local instr = localRequire("lib/instructions")
 local types = localRequire("lib/types")
 
 local readU8, readU32, readInt, readArr, wrap_stream, readList
   = streamutils.readU8, streamutils.readU32, streamutils.readInt,
   streamutils.readArr, streamutils.wrapStream, streamutils.readList
-local COMP_TYPE_FUNC, COMP_TYPE_MEM, VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32
-  = types.COMP_TYPE_FUNC, types.COMP_TYPE_MEM, types.VTYPE_F64,
-  types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32
-
-local function MERGE_TABLES(...)
-  local new = {}
-  for _, v in ipairs({...}) do
-    for k, v2 in pairs(v) do
-      new[k] = v2
-    end
-  end
-
-  return new
-end
-
-local NUM_TYPES = {
-  [VTYPE_F64] = VTYPE_F64,
-  [VTYPE_F32] = VTYPE_F32,
-  [VTYPE_I64] = VTYPE_I64,
-  [VTYPE_I32] = VTYPE_I32
-}
+local readValType, readTypeIdx, readFuncIdx, readMemIdx, readExternIdx
+  = valparser.readValType, valparser.readTypeIdx, valparser.readFuncIdx,
+  valparser.readMemIdx, valparser.readExternIdx
+local COMP_TYPE_FUNC = types.COMP_TYPE_FUNC
 
 -- TODO: More types
 local HEAP_TYPES = {
   [0x70] = COMP_TYPE_FUNC
 }
 
--- TODO: Other types
-local VAL_TYPES = MERGE_TABLES(NUM_TYPES)
-
 -- Compress to a u32 block to save memory
+-- TODO: Need to not use bit operators
 local function u8BlockToU32Block(block)
   local compressed = {}
   for i = 1, #block, 4 do
@@ -66,23 +48,12 @@ local function readExpr(stream)
     val, err = readU8(stream)
     if not val then return nil, err end
   end
+  table.insert(bytes, val)
 
   return {
     data = u8BlockToU32Block(bytes),
     len = #bytes
   }
-end
-
-local function readValType(stream)
-  -- TODO: Support other options
-  local subop, err = readU8(stream)
-  if not subop then return nil, err end
-  local type = VAL_TYPES[subop]
-  if not type then
-    return false, "Only num types supported at this time"
-  end
-
-  return type
 end
 
 local function readResultType(stream)
@@ -118,35 +89,6 @@ function readRectype(stream)
     types = {{
       comptype
     }}
-  }
-end
-
-local function readIdx(stream)
-  return readInt(stream, 32)
-end
-
-local readTypeIdx = readIdx
-local readFuncIdx = readIdx
-local readMemIdx = readIdx
-
-local function readExternIdx(stream)
-  local subop, err = readU8(stream)
-  if not subop then return nil, err end
-  -- TODO: Support other options
-  local type
-  if subop == 0x00 then
-    type = COMP_TYPE_FUNC
-  elseif subop == 0x02 then
-    type = COMP_TYPE_MEM
-  else
-    return false, "Only func is supported at this time"
-  end
-
-  local idx = readInt(stream, 32)
-
-  return {
-    type = type,
-    idx = idx
   }
 end
 
@@ -486,21 +428,6 @@ local function readSection(stream)
   return section
 end
 
-local function readNextSection(stream, sections, expected)
-  local section, err = readSection(stream)
-  if not section then return nil, err end
-  while section.type == 0 do
-    table.insert(sections, section)
-    section, err = readSection(stream)
-    if not section then return nil, err end
-  end
-  table.insert(sections, section)
-  if expected ~= nil and expected ~= section.type then
-    return false, "Expected section type " .. expected .. ", got " .. section.type
-  end
-  return section
-end
-
 local function maybeReadNextSection(stream, sections, expected)
   local pk = stream:peek()
   while pk == 0 do
@@ -539,34 +466,34 @@ local function readModule(stream)
   end
 
   local sections = {}
-  local typeSection, err = readNextSection(stream, sections, 1)
-  if not typeSection then return nil, err end
-  local importSection, err = readNextSection(stream, sections, 2)
-  if not importSection then return nil, err end
-  local funcSection, err = readNextSection(stream, sections, 3)
-  if not funcSection then return nil, err end
-  local tableSection, err = readNextSection(stream, sections, 4)
-  if not tableSection then return nil, err end
-  local memorySection, err = readNextSection(stream, sections, 5)
-  if not memorySection then return nil, err end
-  local tagSection, err = readNextSection(stream, sections, 13)
-  if not tagSection then return nil, err end
-  local globalSection, err = readNextSection(stream, sections, 6)
-  if not globalSection then return nil, err end
-  local exportSection, err = readNextSection(stream, sections, 7)
-  if not exportSection then return nil, err end
+  local typeSection, ok, err = maybeReadNextSection(stream, sections, 1)
+  if not ok then return nil, err end
+  local importSection, ok, err = maybeReadNextSection(stream, sections, 2)
+  if not ok then return nil, err end
+  local funcSection, ok, err = maybeReadNextSection(stream, sections, 3)
+  if not ok then return nil, err end
+  local tableSection, ok, err = maybeReadNextSection(stream, sections, 4)
+  if not ok then return nil, err end
+  local memorySection, ok, err = maybeReadNextSection(stream, sections, 5)
+  if not ok then return nil, err end
+  local tagSection, ok, err = maybeReadNextSection(stream, sections, 13)
+  if not ok then return nil, err end
+  local globalSection, ok, err = maybeReadNextSection(stream, sections, 6)
+  if not ok then return nil, err end
+  local exportSection, ok, err = maybeReadNextSection(stream, sections, 7)
+  if not ok then return nil, err end
   local startSection, ok, err = maybeReadNextSection(stream, sections, 8)
   if not ok then return nil, err end
-  local elemSection, err = readNextSection(stream, sections, 9)
-  if not elemSection then return nil, err end
+  local elemSection, ok, err = maybeReadNextSection(stream, sections, 9)
+  if not ok then return nil, err end
   local dataCntSection, ok, err = maybeReadNextSection(stream, sections, 12)
   if not ok then return nil, err end
-  local codeSection, err = readNextSection(stream, sections, 10)
-  if not codeSection then return nil, err end
-  local dataSection, err = readNextSection(stream, sections, 11)
-  if not dataSection then return nil, err end
+  local codeSection, ok, err = maybeReadNextSection(stream, sections, 10)
+  if not ok then return nil, err end
+  local dataSection, ok, err = maybeReadNextSection(stream, sections, 11)
+  if not ok then return nil, err end
   local _, ok, err = maybeReadNextSection(stream, sections, 0)
-  if not ok then return err end
+  if not ok then return nil, err end
 
   return {
     sections = sections,

@@ -100,14 +100,15 @@ local function createBackedU32Memory(backingArr, u8Size)
   function memory.writeU32Bytes(src, srcpos, destpos, len)
     if
       len < 0
-      or srcpos < 0 or srcpos + len > #src * 4
-      or destpos < 0 or destpos + len > u8Size then
+      or srcpos < 1 or (srcpos - 1) + len > #src * 4
+      or destpos < 0 or destpos + len > u8Size
+    then
       return false, MEM_OOB
     end
 
     local i = 0
     while i < len do
-      local currSrc = srcpos + i
+      local currSrc = (srcpos + i) - 1
       local currDest = destpos + i
       local rem = len - i
 
@@ -174,8 +175,9 @@ local function createBackedU32Memory(backingArr, u8Size)
   function memory.writeStringBytes(srcStr, srcpos, destpos, len)
     if
       len < 0
-      or srcpos < 0 or srcpos + len > #srcStr
-      or destpos < 0 or destpos + len > u8Size then
+      or srcpos < 1 or (srcpos - 1) + len > #srcStr
+      or destpos < 0 or destpos + len > u8Size
+    then
       return false, MEM_OOB
     end
 
@@ -186,12 +188,12 @@ local function createBackedU32Memory(backingArr, u8Size)
       local rem = len - i
 
       if rem >= 4 then
-        local b0, b1, b2, b3 = string.byte(srcStr, currSrc + 1, currSrc + 4)
+        local b0, b1, b2, b3 = string.byte(srcStr, currSrc, currSrc + 3)
         local val = (b0 or 0) + bits.shl(b1 or 0, 8) + bits.shl(b2 or 0, 16) + bits.shl(b3 or 0, 24)
         memory.writeU32(currDest, val)
         i = i + 4
       else
-        local b = string.byte(srcStr, currSrc + 1) or 0
+        local b = string.byte(srcStr, currSrc) or 0
         memory.writeU8(currDest, b)
         i = i + 1
       end
@@ -221,13 +223,17 @@ local function createMemoryReader(memory)
   function reader:read(n)
     assert(n == 1)
     -- TODO: Avoid the char and back conversion
-    local val = string.char(memory.u8(pos))
+    local b, err = memory.u8(pos)
+    if not b then return nil, err end
+    local val = string.char(b)
     pos = pos + n
     return val
   end
   function reader:peek(n)
     assert(n == 1)
-    return string.char(memory.u8(pos))
+    local b = memory.u8(pos)
+    if not b then return nil end
+    return b
   end
   function reader:seek(idx)
     pos = idx

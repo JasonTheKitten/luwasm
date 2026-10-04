@@ -60,7 +60,4 @@ if not module then error(err) end
 
 local vmCreator = localRequire("lib/vm")
 local vm = assert(vmCreator.createVM(module))
-for k, v in pairs(vm.exports) do
-  print(k)
-  if type(v) == "function" then v() end
-end
+print(assert(vm.exports.add(3, 2)))
