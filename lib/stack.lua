@@ -8,6 +8,17 @@ local function create()
   local typeStack = {}
   local handle = {}
 
+  local function pop1Typed(type, name)
+    if #stack < 1 then
+      return nil, STACK_EMPTY
+    end
+    if not handle.isType(type) then
+      return nil, "Type Mismatch (Expected " .. name ..")"
+    end
+    table.remove(typeStack)
+    return table.remove(stack)
+  end
+
   function handle.pushI32(v)
     table.insert(stack, v)
     table.insert(typeStack, types.VTYPE_I32)
@@ -19,15 +30,13 @@ local function create()
     table.insert(typeStack, types.VTYPE_I64)
   end
 
+  function handle.pushExn(v)
+    table.insert(stack, v)
+    table.insert(typeStack, types.HTYPE_EXN)
+  end
+
   function handle.popI32()
-    if #stack < 1 then
-      return nil, STACK_EMPTY
-    end
-    if not handle.isType(types.VTYPE_I32) then
-      return nil, "Type Mismatch (Expected I32)"
-    end
-    table.remove(typeStack)
-    return table.remove(stack)
+    return pop1Typed(types.VTYPE_I32, "I32")
   end
 
   function handle.popI64()
@@ -41,6 +50,10 @@ local function create()
     local lv = table.remove(stack)
     table.remove(typeStack)
     return lv, hv
+  end
+
+  function handle.popExn()
+    return pop1Typed(types.HTYPE_EXN, "Exn")
   end
 
   function handle.isType(vtype)
@@ -84,7 +97,7 @@ local function create()
   end
 
   function handle.pushTyped(vtype, val1, val2)
-    if vtype == types.VTYPE_I64 or vtype == types.VTYPE_F64 then
+    if vtype == types.VTYPE_I64 then
       table.insert(stack, val1)
       table.insert(stack, val2)
       table.insert(typeStack, vtype)
@@ -98,7 +111,7 @@ local function create()
     outputs = outputs or 0
     local curSize = #typeStack
     if curSize < startSize + outputs then
-      return nil, "Stack underflow"
+      return nil, STACK_EMPTY
     end
 
     local typeStart = startSize + 1
@@ -130,13 +143,29 @@ local function create()
     local rawStart = 1
     for i = 1, startTypeIdx - 1 do
       local t = typeStack[i]
-      if t == types.VTYPE_I64 or t == types.VTYPE_F64 then
+      if t == types.VTYPE_I64 then
         rawStart = rawStart + 2
       else
         rawStart = rawStart + 1
       end
     end
     return table.unpack(stack, rawStart)
+  end
+
+  function handle.pushTypedValues(args, vtypes)
+    local argIdx = 1
+    for _, paramType in ipairs(vtypes) do
+      if paramType == types.VTYPE_I64 then
+        local lv = args[argIdx] or 0
+        local hv = args[argIdx + 1] or 0
+        stack.pushTyped(paramType, lv, hv)
+        argIdx = argIdx + 2
+      else
+        local v = args[argIdx] or 0
+        stack.pushTyped(paramType, v)
+        argIdx = argIdx + 1
+      end
+    end
   end
 
   function handle.size()

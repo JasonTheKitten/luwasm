@@ -1,9 +1,11 @@
 local streamutils = localRequire("lib/streamutils")
 local valparser = localRequire("lib/valparser")
+local types = localRequire("lib/types")
 
 local readU8, readInt, readList
   = streamutils.readU8, streamutils.readInt, streamutils.readList
-local readValType, readMemIdx = valparser.readValType, valparser.readMemIdx
+local readValType, readMemIdx, readTagIdx, readLabelIdx
+  = valparser.readValType, valparser.readMemIdx, valparser.readTagIdx, valparser.readLabelIdx
 
 local function readLocals(stream)
   local locals, err = readU8(stream)
@@ -39,7 +41,43 @@ local function readMemArg(stream)
   return align, memidx, m
 end
 
+local function readCatch(stream)
+  local subop, err = readU8(stream)
+  if not subop then return nil, err end
+
+  local type, tagidx
+  if subop == 0 then
+    type = types.CTYPE_CATCH
+    tagidx, err = readTagIdx(stream)
+    if not tagidx then return nil, err end
+  elseif subop == 1 then
+    type = types.CTYPE_CATCH_REF
+    tagidx, err = readTagIdx(stream)
+    if not tagidx then return nil, err end
+  elseif subop == 2 then
+    type = types.CTYPE_CATCH_ALL
+  elseif subop == 3 then
+    type = types.CTYPE_CATCH_ALL_REF
+  else
+    return nil, "Unknown catch type"
+  end
+
+  local labelidx, err = readLabelIdx(stream)
+  if not labelidx then return nil, err end
+
+  return {
+    type = type,
+    tagidx = tagidx,
+    labelidx = labelidx
+  }
+end
+
+local function readCatches(stream)
+  return readList(stream, readCatch)
+end
+
 return {
   readNumLocals = readNumLocals,
-  readMemArg = readMemArg
+  readMemArg = readMemArg,
+  readCatches = readCatches
 }

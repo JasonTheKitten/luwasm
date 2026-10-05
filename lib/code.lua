@@ -6,7 +6,8 @@ local stackLib = localRequire("lib/stack")
 
 local readU8, readInt = streamutils.readU8, streamutils.readInt
 local readNumLocals = codeparser.readNumLocals
-local SYMBOL_BR, SYMBOL_RETURN = instructions.SYMBOL_BR, instructions.SYMBOL_RETURN
+local SYMBOL_BR, SYMBOL_RETURN, SYMBOL_THROW
+  = instructions.SYMBOL_BR, instructions.SYMBOL_RETURN, instructions.SYMBOL_THROW
 local VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, BLOCK_TYPE_EMPTY
   = types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32, types.BLOCK_TYPE_EMPTY
 
@@ -55,21 +56,23 @@ end
 local function determineBlockIO(context, blockType1, blockType2)
   local inputs, outputs = 0, 0
   if blockType1 == true then
-    return nil, "blockidx type not implemented"
-  elseif blockType1 == BLOCK_TYPE_EMPTY then
-    inputs, outputs = 0, 0
-  elseif blockType1 == VTYPE_I32 or blockType1 == VTYPE_F32 then
+    local type = context.types[blockType2 + 1]
+    if not type then
+      return nil, "Type not defined"
+    end
+
+    inputs, outputs = #type.params, #type.rtn
+  else
     inputs, outputs = 0, 1
-  elseif blockType1 == VTYPE_I64 or blockType1 == VTYPE_F64 then
-    inputs, outputs = 0, 2
   end
   return inputs, outputs
 end
 
 local function evaluateBlock(stream, context, blockType1, blockType2, allowElse)
   local inputs, outputs = determineBlockIO(context, blockType1, blockType2)
+  if not inputs then return nil, outputs end
   local stack = context.stack
-  local stackArity = stack.size() + 1 - inputs
+  local stackArity = stack.size() - inputs
   local startPos = stream:pos()
   local ok, err = evaluate(stream, context, allowElse)
   if not ok and type(err) == "table" and err.symbol == SYMBOL_BR then
@@ -136,13 +139,16 @@ local function evaluateFunc(stream, context, functionData)
 
   local frameIndex = stack.size() + 1
   frame.frameIndex = frameIndex
-
   local ok, err = evaluate(stream, context)
-  if not ok and not (type(err) == "table" and err.symbol == SYMBOL_RETURN) then
-    return nil, err
-  end
 
   context.frame = oldFrame
+
+  if not ok and type(err) == "table" and err.symbol == SYMBOL_THROW then
+    stack.unwind(frameIndex, 1)
+    return nil, err
+  elseif not ok and not (type(err) == "table" and err.symbol == SYMBOL_RETURN) then
+    return nil, err
+  end
 
   return true, frameIndex
 end

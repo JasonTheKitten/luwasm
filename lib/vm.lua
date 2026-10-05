@@ -2,9 +2,9 @@ local types = localRequire("lib/types")
 local memoryLib = localRequire("lib/memory")
 local codeLib = localRequire("lib/code")
 local stackLib = localRequire("lib/stack")
-local COMP_TYPE_FUNC, COMP_TYPE_MEM, VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32
-  = types.COMP_TYPE_FUNC, types.COMP_TYPE_MEM,
-  types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32
+local instructions = localRequire("lib/instructions")
+
+local COMP_TYPE_FUNC, COMP_TYPE_MEM = types.COMP_TYPE_FUNC, types.COMP_TYPE_MEM
 
 local function evaluateConstantExpr(expr)
   local memory = memoryLib.createBackedU32Memory(expr.data, expr.len)
@@ -40,7 +40,7 @@ local function createVM(module)
     for _, v2 in ipairs(v.types) do
       for _, v3 in ipairs(v2) do
         if v3.type == COMP_TYPE_FUNC then
-          table.insert(types, { numArgs = #v3.params, params = v3.params })
+          table.insert(types, { numArgs = #v3.params, params = v3.params, rtn = v3.rtn })
         end
       end
     end
@@ -52,6 +52,18 @@ local function createVM(module)
     globals[k] = {
       value = 0, -- TODO: But what if it is 64-bit?
       info = v
+    }
+  end
+
+  local tags = {}
+  local tagList = module.tagSection and module.tagSection.tags or {}
+  for k, v in ipairs(tagList) do
+    local type = types[v.typeidx + 1]
+    if not type then
+      return nil, "Type not defined"
+    end
+    tags[k] = {
+      type = type
     }
   end
 
@@ -97,7 +109,7 @@ local function createVM(module)
     
     if not ok then return nil, frameIndex end
     
-    return true, context.stack.unpack(frameIndex)
+    return true, frameIndex
   end
 
   for k in ipairs(codesList) do
@@ -123,19 +135,7 @@ local function createVM(module)
     local funcType, err = getFuncType(funcIdx)
     if not funcType then return nil, err end
 
-    local argIdx = 1
-    for _, paramType in ipairs(funcType.params) do
-      if paramType == VTYPE_I64 or paramType == VTYPE_F64 then
-        local lv = args[argIdx] or 0
-        local hv = args[argIdx + 1] or 0
-        stack.pushTyped(paramType, lv, hv)
-        argIdx = argIdx + 2
-      else
-        local v = args[argIdx] or 0
-        stack.pushTyped(paramType, v)
-        argIdx = argIdx + 1
-      end
-    end
+    stack.pushTypedValues(args, funcType.params)
 
     return stack
   end
@@ -146,13 +146,31 @@ local function createVM(module)
     if v.type.type == COMP_TYPE_FUNC then
       exports[v.name] = function(...)
         local context = codeLib.newContext()
-        context.stack = createStack(v.type.idx, {...})
-        context.frame.frameIndex = context.stack.size() + 1
+        local stack, err = createStack(v.type.idx, {...})
+        if not stack then return nil, err end
+        context.stack = stack
+        context.frame.frameIndex = stack.size() + 1
         context.memories = memories
         context.data = dataSegmentList
         context.globals = globals
+        context.tags = tags
         context.functions = functions
-        return functions[v.type.idx + 1](context)
+        context.types = types
+
+        local ok, frameIndex = functions[v.type.idx + 1](context)
+        local err = frameIndex
+        if not ok and type(err) == "table" then
+          if err.symbol == instructions.SYMBOL_BR then
+            return nil, "Control flow 'br' reached top (not implemented)"
+          elseif err.symbol == instructions.SYMBOL_RETURN then
+            return nil, "Control flow 'return' reached top (not implemented)"
+          elseif err.symbol == instructions.SYMBOL_THROW then
+            return nil, "Control flow 'throw' reached top (not implemented)"
+          end
+        end
+        if not ok then return nil, err end
+
+        return ok, stack.unpack(frameIndex)
       end
     elseif v.type.type == COMP_TYPE_MEM then
       exports[v.name] = memories[v.type.idx + 1]

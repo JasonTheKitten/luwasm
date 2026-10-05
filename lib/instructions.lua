@@ -2,18 +2,22 @@ local streamutils = localRequire("lib/streamutils")
 local codeparser = localRequire("lib/codeparser")
 local numbers = localRequire("lib/numbers")
 local valparser = localRequire("lib/valparser")
+local types = localRequire("lib/types")
 
 local readSInt = streamutils.readSInt
-local readMemArg = codeparser.readMemArg
-local readBlockType, readFuncIdx, readMemIdx, readGlobalIdx, readDataIdx, readLocalIdx, readLabelIdx
+local readMemArg, readCatches = codeparser.readMemArg, codeparser.readCatches
+local readBlockType, readFuncIdx, readMemIdx, readGlobalIdx, readTagIdx, readDataIdx, readLocalIdx, readLabelIdx
   = valparser.readBlockType, valparser.readFuncIdx, valparser.readMemIdx, valparser.readGlobalIdx,
-  valparser.readDataIdx, valparser.readLocalIdx, valparser.readLabelIdx
+  valparser.readTagIdx, valparser.readDataIdx, valparser.readLocalIdx, valparser.readLabelIdx
 
 local STACK_EMPTY = "Stack is empty"
 local NO_JUMP_POS = "No recorded jump pos"
 
 local SYMBOL_BR = {}
 local SYMBOL_RETURN = {}
+local SYMBOL_THROW = {}
+
+local I33 = 0x100000000
 
 local instr = {}
 
@@ -324,6 +328,37 @@ instr["if"].collectArgs = function(stream)
 end
 instr["if"].blockEnds = { 0x05, 0x0B }
 
+local throwRef
+
+instr.throw = {}
+instr.throw.evaluate = function(_, context, tagidx, err)
+  if not tagidx then return nil, err end
+  local tag = context.tags[tagidx + 1]
+  if not tag then
+    return nil, "Tag not defined"
+  end
+
+  local stack = context.stack
+  local values = { stack.unpack(stack.size() + 1 - #tag.type) }
+  -- TODO: Assert types equal
+  local exn = { tag = tag, tagidx = tagidx, values = values }
+  stack.pushExn(exn)
+
+  return throwRef()
+end
+instr.throw.collectArgs = function(stream)
+  return readTagIdx(stream)
+end
+
+instr.throw_ref = {}
+instr.throw_ref.evaluate = function()
+  return nil, { symbol = SYMBOL_THROW }
+end
+instr.throw_ref.collectArgs = function()
+  return true
+end
+throwRef = instr.throw_ref.evaluate
+
 instr.br = {}
 instr.br.evaluate = function(_, _, depth, err)
   if not depth then return nil, err end
@@ -368,6 +403,56 @@ end
 instr.call.collectArgs = function(stream)
   return readFuncIdx(stream)
 end
+
+-- TODO: This almost certainly isn't proper
+local function handleException(context, catches)
+  local stack = context.stack
+  if stack.isType(types.RTYPE_NULL) then
+    return nil, "Exception cannot be null"
+  elseif stack.isType(types.HTYPE_EXN) then
+    local exn = stack.popExn()
+    for _, v in ipairs(catches) do
+      if v.type == types.CTYPE_CATCH and v.tagidx == exn.tagidx then
+        stack.pushTypedValues(exn.values, exn.tag.type)
+        return nil, { symbol = SYMBOL_BR, depth = v.labelidx }
+      elseif v.type == types.CTYPE_CATCH_ALL then
+        return nil, { symbol = SYMBOL_BR, depth = v.labelidx }
+      elseif v.type == types.CTYPE_CATCH_REF and v.tagidx == exn.tagidx then
+        stack.pushTypedValues(exn.values, exn.tag.type)
+        stack.pushExn(exn)
+        return nil, { symbol = SYMBOL_BR, depth = v.labelidx }
+      elseif v.type == types.CTYPE_CATCH_ALL_REF then
+        stack.pushExn(exn)
+        return nil, { symbol = SYMBOL_BR, depth = v.labelidx }
+      end
+    end
+
+    stack.pushExn(exn)
+    return nil, { symbol = SYMBOL_THROW }
+  else
+    -- TODO: Handle this elsewhere
+    return nil, { symbol = SYMBOL_THROW }
+  end
+end
+
+instr.try_table = {}
+instr.try_table.evaluate = function(stream, context, blockType1, blockType2, catches)
+  if not blockType1 then return nil, blockType2 end
+  local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2)
+  if not ok and type(err) == "table" and err.symbol == SYMBOL_THROW then
+    return handleException(context, catches)
+  end
+
+  return ok, err
+end
+instr.try_table.collectArgs = function(stream)
+  local blockType1, blockType2 = readBlockType(stream)
+  if not blockType1 then return nil, blockType2 end
+  local catches, err = readCatches(stream)
+  if not catches then return nil, err end
+  return blockType1, blockType2, catches
+end
+instr.try_table.blockEnds = { 0x0B }
 
 instr["local"] = {}
 instr["local"].get = {}
@@ -495,7 +580,7 @@ instr.i32.const.evaluate = function(_, context, val, err)
   return true
 end
 instr.i32.const.collectArgs = function(stream)
-  return readSInt(stream, 32)
+  return readSInt(stream, 32) % I33
 end
 
 instr.i32.eqz = testop32(numbers.i32.eqz)
@@ -515,7 +600,9 @@ instr.i64.const.evaluate = function(_, context, lh, hh)
   return true
 end
 instr.i64.const.collectArgs = function(stream)
-  return readSInt(stream, 64)
+  local lh, hh = readSInt(stream, 64)
+  if not lh then return nil, hh end
+  return lh % I33, hh % I33
 end
 
 local memtblSubOps = {
@@ -530,12 +617,15 @@ instr._lookup = {
   [0x03] = instr.loop,
   [0x04] = instr["if"],
   [0x05] = instr._["else"],
+  [0x08] = instr.throw,
+  [0x0A] = instr.throw_ref,
   [0x0B] = instr._.block_end,
   [0x0C] = instr.br,
   [0x0D] = instr.br_if,
   [0x0F] = instr["return"],
   [0x10] = instr.call,
   [0x1A] = instr.drop,
+  [0x1F] = instr.try_table,
   [0x20] = instr["local"].get,
   [0x21] = instr["local"].set,
   [0x22] = instr["local"].tee,
@@ -573,5 +663,6 @@ instr._lookup = {
 
 instr.SYMBOL_BR = SYMBOL_BR
 instr.SYMBOL_RETURN = SYMBOL_RETURN
+instr.SYMBOL_THROW = SYMBOL_THROW
 
 return instr
