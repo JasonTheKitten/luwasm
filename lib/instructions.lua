@@ -36,11 +36,11 @@ local function unop32(op)
   local inst = {}
   function inst.evaluate(_, context)
     local stack = context.stack
-    local c = table.remove(stack, #stack)
-    if not c then return nil, STACK_EMPTY end
+    local c, err = stack.popI32()
+    if not c then return nil, err end
     local res, err = op(c)
     if res == nil then return nil, err end
-    stack[#stack+1] = res
+    stack.pushI32(res)
     return true
   end
   function inst.skip()
@@ -53,13 +53,13 @@ local function binop32(op)
   local inst = {}
   function inst.evaluate(_, context)
     local stack = context.stack
-    local c2 = table.remove(stack, #stack)
-    if not c2 then return nil, STACK_EMPTY end
-    local c1 = table.remove(stack, #stack)
-    if not c1 then return nil, STACK_EMPTY end
+    local c2, err = stack.popI32()
+    if not c2 then return nil, err end
+    local c1, err = stack.popI32()
+    if not c1 then return nil, err end
     local res, err = op(c1, c2)
     if res == nil then return nil, err end
-    stack[#stack+1] = res
+    stack.pushI32(res)
     return true
   end
   function inst.skip()
@@ -94,8 +94,8 @@ local function load32(size, signed)
     end
 
     local stack = context.stack
-    local i = table.remove(stack, #stack)
-    if not i then return nil, STACK_EMPTY end
+    local i, err = stack.popI32()
+    if not i then return nil, err end
 
     local val = memory[size](i + pos)
 
@@ -107,7 +107,7 @@ local function load32(size, signed)
       end
     end
 
-    stack[#stack + 1] = val
+    stack.pushI32(val)
     return true
   end
 
@@ -128,10 +128,10 @@ local function store32(sizeMethod)
     end
 
     local stack = context.stack
-    local val = table.remove(stack, #stack)
-    if not val then return nil, STACK_EMPTY end
-    local i = table.remove(stack, #stack)
-    if not i then return nil, STACK_EMPTY end
+    local val, err = stack.popI32()
+    if not val then return nil, err end
+    local i, err = stack.popI32()
+    if not i then return nil, err end
     memory[sizeMethod](i + pos, val)
 
     return true
@@ -153,8 +153,8 @@ local function load64(size, signed)
     end
 
     local stack = context.stack
-    local i = table.remove(stack, #stack)
-    if not i then return nil, STACK_EMPTY end
+    local i, err = stack.popI32()
+    if not i then return nil, err end
 
     local low, high
     if size == "u64" then
@@ -175,8 +175,7 @@ local function load64(size, signed)
       end
     end
 
-    stack[#stack + 1] = low
-    stack[#stack + 1] = high
+    stack.pushI64(low, high)
     return true
   end
 
@@ -197,12 +196,10 @@ local function store64(sizeMethod)
     end
 
     local stack = context.stack
-    local high = table.remove(stack, #stack)
-    if not high then return nil, STACK_EMPTY end
-    local low = table.remove(stack, #stack)
-    if not low then return nil, STACK_EMPTY end
-    local i = table.remove(stack, #stack)
-    if not i then return nil, STACK_EMPTY end
+    local low, high = stack.popI64()
+    if not low then return nil, high end
+    local i, err = stack.popI32()
+    if not i then return nil, err end
 
     if sizeMethod == "writeU64" then
       memory["writeU64"](i + pos, low, high)
@@ -254,12 +251,10 @@ instr.unreachable.skip = function()
   return true
 end
 
--- TODO: Breaks for u64
 instr.drop = {}
 instr.drop.evaluate = function(context)
   local stack = context.stack
-  local c = table.remove(stack, #stack)
-  if not c then return nil, STACK_EMPTY end
+  stack.drop()
   return true
 end
 instr.drop.skip = function()
@@ -302,8 +297,8 @@ instr["if"].evaluate = function(stream, context)
   if not blockType1 then return nil, blockType2 end
   
   local stack = context.stack
-  local c = table.remove(stack, #stack)
-  if not c then return nil, STACK_EMPTY end
+  local c, err = stack.popI32()
+  if not c then return nil, err end
   if c ~= 0 then
     local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2, true)
     if not ok then return nil, err end
@@ -346,8 +341,8 @@ instr.br_if.evaluate = function(stream, context)
   local depth, err = readLabelIdx(stream)
   if not depth then return nil, err end
   local stack = context.stack
-  local c = table.remove(stack, #stack)
-  if not c then return nil, STACK_EMPTY end
+  local c, err = stack.popI32()
+  if not c then return nil, err end
   if c ~= 0 then
     return nil, { symbol = SYMBOL_BR, depth = depth }
   end
@@ -383,11 +378,11 @@ instr["local"] = {}
 instr["local"].get = {}
 instr["local"].get.evaluate = function(stream, context)
   local localIdx = readLocalIdx(stream)
-  local val = context.frame.locals[localIdx + 1]
-  if not val then
+  local loc = context.frame.locals[localIdx + 1]
+  if not loc then
     return nil, "Local not defined"
   end
-  table.insert(context.stack, val)
+  context.stack.pushLocal(loc)
   return true
 end
 instr["local"].get.skip = function(stream)
@@ -398,9 +393,10 @@ instr["local"].set = {}
 instr["local"].set.evaluate = function(stream, context)
   local localIdx = readLocalIdx(stream)
   local stack = context.stack
-  local val = table.remove(stack, #stack)
-  if not val then return nil, STACK_EMPTY end
-  context.frame.locals[localIdx + 1] = val
+  local loc = stack.toLocal()
+  if not loc then return nil, STACK_EMPTY end
+  stack.drop()
+  context.frame.locals[localIdx + 1] = loc
   return true
 end
 instr["local"].set.skip = function(stream)
@@ -411,9 +407,9 @@ instr["local"].tee = {}
 instr["local"].tee.evaluate = function(stream, context)
   local localIdx = readLocalIdx(stream)
   local stack = context.stack
-  local val = stack[#stack]
-  if not val then return nil, STACK_EMPTY end
-  context.frame.locals[localIdx + 1] = val
+  local loc = stack.toLocal()
+  if not loc then return nil, STACK_EMPTY end
+  context.frame.locals[localIdx + 1] = loc
   return true
 end
 instr["local"].tee.skip = function(stream)
@@ -429,7 +425,7 @@ instr.global.get.evaluate = function(stream, context)
   if not global then
     return nil, "Global not defined"
   end
-  table.insert(context.stack, global)
+  context.stack.pushLocal(global)
   return true
 end
 instr.global.get.skip = function(stream)
@@ -475,9 +471,12 @@ instr.memory.init.evaluate = function(stream, context)
   if not memidx then return nil, err end
 
   local stack = context.stack
-  local len = table.remove(stack, #stack)
-  local dataOffset = table.remove(stack, #stack)
-  local memOffset = table.remove(stack, #stack)
+  local len, err = stack.popI32()
+  if not len then return nil, err end
+  local dataOffset, err = stack.popI32()
+  if not dataOffset then return nil, err end
+  local memOffset, err = stack.popI32()
+  if not memOffset then return nil, err end
 
   local memory = context.memories[memidx + 1]
   local data = context.data[dataidx + 1]
@@ -501,7 +500,7 @@ instr.i32.const.evaluate = function(stream, context)
   local stack = context.stack
   local val, err = readSInt(stream, 32)
   if not val then return nil, err end
-  stack[#stack + 1] = val % 0x100000000
+  stack.pushI32(val)
   return true
 end
 instr.i32.const.skip = function(stream)
@@ -522,8 +521,7 @@ instr.i64.const.evaluate = function(stream, context)
   local stack = context.stack
   local lh, hh = readSInt(stream, 64)
   if not lh then return nil, hh end
-  stack[#stack + 1] = lh % 0x100000000
-  stack[#stack + 1] = hh % 0x100000000
+  stack.pushI64(lh, hh)
   return true
 end
 instr.i64.const.skip = function(stream)

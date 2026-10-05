@@ -2,6 +2,7 @@ local streamutils = localRequire("lib/streamutils")
 local codeparser = localRequire("lib/codeparser")
 local instructions = localRequire("lib/instructions")
 local types = localRequire("lib/types")
+local stackLib = localRequire("lib/stack")
 
 local readU8, readInt = streamutils.readU8, streamutils.readInt
 local readNumLocals = codeparser.readNumLocals
@@ -65,20 +66,10 @@ local function determineBlockIO(context, blockType1, blockType2)
   return inputs, outputs
 end
 
-local function unwindStack(stack, startIdx, outputs)
-  local numToRemove = #stack - startIdx - outputs + 1
-  if numToRemove < 0 then
-    return nil, "Stack underflow"
-  end
-  for _=1, numToRemove do
-    table.remove(stack, startIdx)
-  end
-  return true
-end
-
 local function evaluateBlock(stream, context, blockType1, blockType2, allowElse)
   local inputs, outputs = determineBlockIO(context, blockType1, blockType2)
-  local stackArity = #context.stack + 1 - inputs
+  local stack = context.stack
+  local stackArity = stack.size() + 1 - inputs
   local startPos = stream:pos()
   local ok, err = evaluate(stream, context, allowElse)
   if not ok and type(err) == "table" and err.symbol == SYMBOL_BR then
@@ -88,11 +79,11 @@ local function evaluateBlock(stream, context, blockType1, blockType2, allowElse)
         return false, "No recorded jump pos"
       end
       stream:seek(jumpPos + 1)
-      ok, err = unwindStack(context.stack, stackArity, outputs)
+      ok, err = stack.unwind(stackArity, outputs)
       if not ok then return nil, err end
       return true, true
     elseif not ok and type(err) == "table" and err.symbol == SYMBOL_RETURN then
-      local ok, err2 = unwindStack(context.stack, stackArity, outputs)
+      local ok, err2 = stack.unwind(stackArity, outputs)
       if not ok then return nil, err2 end
       return nil, err
     else
@@ -102,7 +93,7 @@ local function evaluateBlock(stream, context, blockType1, blockType2, allowElse)
   end
   if not ok then return nil, err end
 
-  ok, err = unwindStack(context.stack, stackArity, outputs)
+  ok, err = stack.unwind(stackArity, outputs)
   if not ok then return nil, err end
   return true, false
 end
@@ -111,7 +102,7 @@ local function evaluateConstExpr(stream, context)
   local ok, err = evaluate(stream, context)
   if not ok then return nil, err end
 
-  return true, table.unpack(context.stack)
+  return true, context.stack.unpack(1)
 end
 
 local function evaluateFunc(stream, context, functionData)
@@ -124,16 +115,26 @@ local function evaluateFunc(stream, context, functionData)
   }
   context.frame = frame
 
+  local stack = context.stack
   local numArgs = functionData.numArgs
-  local cpyStart = #context.stack - numArgs + 1
-  for i=1, numArgs do
-    frame.locals[i] = table.remove(context.stack, cpyStart)
-  end
-  for i=1, numLocals do
-    table.insert(frame.locals, 0)
+
+  for i = numArgs, 1, -1 do
+    local loc, err = stack.toLocal()
+    stack.drop()
+    if not loc then return nil, err end
+    frame.locals[i] = loc
   end
 
-  local frameIndex = #context.stack + 1
+  for i = 1, numLocals do
+    local localType = (functionData.localTypes and functionData.localTypes[i]) or types.VTYPE_I32
+    if localType == types.VTYPE_I64 then
+      table.insert(frame.locals, { type = types.VTYPE_I64, value = 0, value2 = 0 })
+    else
+      table.insert(frame.locals, { type = types.VTYPE_I32, value = 0 })
+    end
+  end
+
+  local frameIndex = stack.size() + 1
   frame.frameIndex = frameIndex
 
   local ok, err = evaluate(stream, context)
@@ -184,7 +185,7 @@ end
 local function newContext()
   return {
     evaluateBlock = evaluateBlock,
-    stack = {},
+    stack = stackLib.createStack(),
     functions = {},
     frame = {
       locals = {},

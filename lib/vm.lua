@@ -1,6 +1,7 @@
 local types = localRequire("lib/types")
 local memoryLib = localRequire("lib/memory")
 local codeLib = localRequire("lib/code")
+local stackLib = localRequire("lib/stack")
 local COMP_TYPE_FUNC, COMP_TYPE_MEM, VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32
   = types.COMP_TYPE_FUNC, types.COMP_TYPE_MEM,
   types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32
@@ -33,30 +34,13 @@ local function createVM(module)
     end
   end
 
-  local function sumArgCount(params)
-    local argCount = 0
-    for _, v in ipairs(params) do
-      if v == VTYPE_F64 or v == VTYPE_I64 then
-        argCount = argCount + 2
-      elseif v == VTYPE_F32 or v == VTYPE_I32 then
-        argCount = argCount + 1
-      else
-        return nil, "Unsupported type"
-      end
-    end
-
-    return argCount
-  end
-
   local types = {}
   local typesList = module.typeSection and module.typeSection.types or {}
   for _, v in ipairs(typesList) do
     for _, v2 in ipairs(v.types) do
       for _, v3 in ipairs(v2) do
         if v3.type == COMP_TYPE_FUNC then
-          local argCount, err = sumArgCount(v3.params)
-          if not argCount then return err end
-          table.insert(types, { numArgs = argCount })
+          table.insert(types, { numArgs = #v3.params, params = v3.params })
         end
       end
     end
@@ -113,7 +97,7 @@ local function createVM(module)
     
     if not ok then return nil, frameIndex end
     
-    return true, table.unpack(context.stack, frameIndex)
+    return true, context.stack.unpack(frameIndex)
   end
 
   for k in ipairs(codesList) do
@@ -124,15 +108,46 @@ local function createVM(module)
     functionsData[k] = {}
   end
 
+  local function getFuncType(funcIdx)
+    if funcIdx >= #importsList then
+      local codeIdx = funcIdx - #importsList + 1
+      local typeIdx = module.funcSection.funcs[codeIdx]
+      return types[typeIdx + 1]
+    else
+      return nil, "Import functions not implemented"
+    end
+  end
+
+  local function createStack(funcIdx, args)
+    local stack = stackLib.createStack()
+    local funcType, err = getFuncType(funcIdx)
+    if not funcType then return nil, err end
+
+    local argIdx = 1
+    for _, paramType in ipairs(funcType.params) do
+      if paramType == VTYPE_I64 or paramType == VTYPE_F64 then
+        local lv = args[argIdx] or 0
+        local hv = args[argIdx + 1] or 0
+        stack.pushTyped(paramType, lv, hv)
+        argIdx = argIdx + 2
+      else
+        local v = args[argIdx] or 0
+        stack.pushTyped(paramType, v)
+        argIdx = argIdx + 1
+      end
+    end
+
+    return stack
+  end
+
   local exports = {}
   local exportsList = module.exportSection and module.exportSection.exports or {}
   for _, v in ipairs(exportsList) do
     if v.type.type == COMP_TYPE_FUNC then
       exports[v.name] = function(...)
-        local args = {...}
         local context = codeLib.newContext()
-        context.stack = args
-        context.frame.frameIndex = #args + 1
+        context.stack = createStack(v.type.idx, {...})
+        context.frame.frameIndex = context.stack.size() + 1
         context.memories = memories
         context.data = dataSegmentList
         context.globals = globals
