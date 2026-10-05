@@ -29,7 +29,7 @@ end
 local function evaluateNext(stream, context)
   local instr, err = lookupInstr(stream)
   if not instr then return nil, err end
-  return instr.evaluate(stream, context)
+  return instr.evaluate(stream, context, instr.collectArgs(stream))
 end
 
 local function evaluate(stream, context, allowElse)
@@ -165,7 +165,7 @@ local function generateJumpMap(stream)
 
     local instr, err = lookupInstr(stream)
     if not instr then return nil, err end
-    instr.skip(stream)
+    instr.collectArgs(stream)
 
     if instr.blockEnds ~= nil then
       local newSearch = {

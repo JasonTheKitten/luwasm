@@ -43,7 +43,7 @@ local function unop32(op)
     stack.pushI32(res)
     return true
   end
-  function inst.skip()
+  function inst.collectArgs()
     return true
   end
   return inst
@@ -62,7 +62,7 @@ local function binop32(op)
     stack.pushI32(res)
     return true
   end
-  function inst.skip()
+  function inst.collectArgs()
     return true
   end
   return inst
@@ -86,8 +86,8 @@ end
 
 local function load32(size, signed)
   local inst = {}
-  function inst.evaluate(stream, context)
-    local _, memidx, pos = readMemArg(stream)
+  function inst.evaluate(_, context, align, memidx, pos)
+    if not align then return nil, memidx end
     local memory = context.memories[memidx + 1]
     if not memory then
       return nil, "Memory not defined"
@@ -111,7 +111,7 @@ local function load32(size, signed)
     return true
   end
 
-  function inst.skip(stream)
+  function inst.collectArgs(stream)
     return readMemArg(stream)
   end
 
@@ -120,8 +120,8 @@ end
 
 local function store32(sizeMethod)
   local inst = {}
-  function inst.evaluate(stream, context)
-    local _, memidx, pos = readMemArg(stream)
+  function inst.evaluate(_, context, align, memidx, pos)
+    if not align then return nil, memidx end
     local memory = context.memories[memidx + 1]
     if not memory then
       return nil, "Memory not defined"
@@ -136,7 +136,8 @@ local function store32(sizeMethod)
 
     return true
   end
-  function inst.skip(stream)
+
+  function inst.collectArgs(stream)
     return readMemArg(stream)
   end
 
@@ -145,8 +146,8 @@ end
 
 local function load64(size, signed)
   local inst = {}
-  function inst.evaluate(stream, context)
-    local _, memidx, pos = readMemArg(stream)
+  function inst.evaluate(_, context, align, memidx, pos)
+    if not align then return nil, memidx end
     local memory = context.memories[memidx + 1]
     if not memory then
       return nil, "Memory not defined"
@@ -179,7 +180,7 @@ local function load64(size, signed)
     return true
   end
 
-  function inst.skip(stream)
+  function inst.collectArgs(stream)
     return readMemArg(stream)
   end
 
@@ -188,8 +189,8 @@ end
 
 local function store64(sizeMethod)
   local inst = {}
-  function inst.evaluate(stream, context)
-    local _, memidx, pos = readMemArg(stream)
+  function inst.evaluate(_, context, align, memidx, pos)
+    if not align then return nil, memidx end
     local memory = context.memories[memidx + 1]
     if not memory then
       return nil, "Memory not defined"
@@ -210,7 +211,7 @@ local function store64(sizeMethod)
     return true
   end
 
-  function inst.skip(stream)
+  function inst.collectArgs(stream)
     return readMemArg(stream)
   end
 
@@ -219,10 +220,10 @@ end
 
 instr._ = {}
 instr._.block_end = {}
-instr._.block_end.evaluate = function(_)
+instr._.block_end.evaluate = function()
   return nil, "Block end should be skipped"
 end
-instr._.block_end.skip = function()
+instr._.block_end.collectArgs = function()
   return true
 end
 
@@ -230,7 +231,7 @@ instr._["else"] = {}
 instr._["else"].evaluate = function()
   return nil, "Block end should be skipped"
 end
-instr._["else"].skip = function(stream)
+instr._["else"].collectArgs = function()
   return true
 end
 instr._["else"].blockEnds = { 0x0B }
@@ -239,7 +240,7 @@ instr.nop = {}
 instr.nop.evaluate = function()
   return true
 end
-instr.nop.skip = function()
+instr.nop.collectArgs = function()
   return true
 end
 
@@ -247,36 +248,34 @@ instr.unreachable = {}
 instr.unreachable.evaluate = function()
   return nil, "Unreachable instruction reached"
 end
-instr.unreachable.skip = function()
+instr.unreachable.collectArgs = function()
   return true
 end
 
 instr.drop = {}
-instr.drop.evaluate = function(context)
+instr.drop.evaluate = function(_, context)
   local stack = context.stack
   stack.drop()
   return true
 end
-instr.drop.skip = function()
+instr.drop.collectArgs = function()
   return true
 end
 
 instr.block = {}
-instr.block.evaluate = function(stream, context)
-  local blockType1, blockType2 = readBlockType(stream)
+instr.block.evaluate = function(stream, context, blockType1, blockType2)
   if not blockType1 then return nil, blockType2 end
   local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2)
   if not ok then return nil, err end
   return true
 end
-instr.block.skip = function(stream)
+instr.block.collectArgs = function(stream)
   return readBlockType(stream)
 end
 instr.block.blockEnds = { 0x0B }
 
 instr.loop = {}
-instr.loop.evaluate = function(stream, context)
-  local blockType1, blockType2 = readBlockType(stream)
+instr.loop.evaluate = function(stream, context, blockType1, blockType2)
   if not blockType1 then return nil, blockType2 end
   local startPos = stream:pos()
   while true do
@@ -286,14 +285,13 @@ instr.loop.evaluate = function(stream, context)
     stream:seek(startPos)
   end
 end
-instr.loop.skip = function(stream)
+instr.loop.collectArgs = function(stream)
   return readBlockType(stream)
 end
 instr.loop.blockEnds = { 0x0B }
 
 instr["if"] = {}
-instr["if"].evaluate = function(stream, context)
-  local blockType1, blockType2 = readBlockType(stream)
+instr["if"].evaluate = function(stream, context, blockType1, blockType2)
   if not blockType1 then return nil, blockType2 end
   
   local stack = context.stack
@@ -321,24 +319,22 @@ instr["if"].evaluate = function(stream, context)
 
   return true
 end
-instr["if"].skip = function(stream)
+instr["if"].collectArgs = function(stream)
   return readBlockType(stream)
 end
 instr["if"].blockEnds = { 0x05, 0x0B }
 
 instr.br = {}
-instr.br.evaluate = function(stream, context)
-  local depth, err = readLabelIdx(stream)
+instr.br.evaluate = function(_, _, depth, err)
   if not depth then return nil, err end
   return nil, { symbol = SYMBOL_BR, depth = depth }
 end
-instr.br.skip = function(stream)
+instr.br.collectArgs = function(stream)
   return readLabelIdx(stream)
 end
 
 instr.br_if = {}
-instr.br_if.evaluate = function(stream, context)
-  local depth, err = readLabelIdx(stream)
+instr.br_if.evaluate = function(_, context, depth, err)
   if not depth then return nil, err end
   local stack = context.stack
   local c, err = stack.popI32()
@@ -348,7 +344,7 @@ instr.br_if.evaluate = function(stream, context)
   end
   return true
 end
-instr.br_if.skip = function(stream)
+instr.br_if.collectArgs = function(stream)
   return readLabelIdx(stream)
 end
 
@@ -356,28 +352,27 @@ instr["return"] = {}
 instr["return"].evaluate = function()
   return nil, { symbol = SYMBOL_RETURN }
 end
-instr["return"].skip = function()
+instr["return"].collectArgs = function()
   return true
 end
 
 instr.call = {}
-instr.call.evaluate = function(stream, context)
-  local funcidx = readFuncIdx(stream)
-  -- TODO: This is not really the correct way to call a function
+instr.call.evaluate = function(_, context, funcidx, err)
+  if not funcidx then return nil, err end
   local func = context.functions[funcidx + 1]
   if not func then
     return nil, "Function not defined"
   end
   return func(context)
 end
-instr.call.skip = function(stream)
+instr.call.collectArgs = function(stream)
   return readFuncIdx(stream)
 end
 
 instr["local"] = {}
 instr["local"].get = {}
-instr["local"].get.evaluate = function(stream, context)
-  local localIdx = readLocalIdx(stream)
+instr["local"].get.evaluate = function(_, context, localIdx, err)
+  if not localIdx then return nil, err end
   local loc = context.frame.locals[localIdx + 1]
   if not loc then
     return nil, "Local not defined"
@@ -385,13 +380,13 @@ instr["local"].get.evaluate = function(stream, context)
   context.stack.pushLocal(loc)
   return true
 end
-instr["local"].get.skip = function(stream)
+instr["local"].get.collectArgs = function(stream)
   return readLocalIdx(stream)
 end
 
 instr["local"].set = {}
-instr["local"].set.evaluate = function(stream, context)
-  local localIdx = readLocalIdx(stream)
+instr["local"].set.evaluate = function(_, context, localIdx, err)
+  if not localIdx then return nil, err end
   local stack = context.stack
   local loc = stack.toLocal()
   if not loc then return nil, STACK_EMPTY end
@@ -399,27 +394,26 @@ instr["local"].set.evaluate = function(stream, context)
   context.frame.locals[localIdx + 1] = loc
   return true
 end
-instr["local"].set.skip = function(stream)
+instr["local"].set.collectArgs = function(stream)
   return readLocalIdx(stream)
 end
 
 instr["local"].tee = {}
-instr["local"].tee.evaluate = function(stream, context)
-  local localIdx = readLocalIdx(stream)
+instr["local"].tee.evaluate = function(_, context, localIdx, err)
+  if not localIdx then return nil, err end
   local stack = context.stack
   local loc = stack.toLocal()
   if not loc then return nil, STACK_EMPTY end
   context.frame.locals[localIdx + 1] = loc
   return true
 end
-instr["local"].tee.skip = function(stream)
+instr["local"].tee.collectArgs = function(stream)
   return readLocalIdx(stream)
 end
 
 instr.global = {}
 instr.global.get = {}
-instr.global.get.evaluate = function(stream, context)
-  local globalidx, err = readGlobalIdx(stream)
+instr.global.get.evaluate = function(_, context, globalidx, err)
   if not globalidx then return nil, err end
   local global = context.globals[globalidx + 1]
   if not global then
@@ -428,7 +422,7 @@ instr.global.get.evaluate = function(stream, context)
   context.stack.pushLocal(global)
   return true
 end
-instr.global.get.skip = function(stream)
+instr.global.get.collectArgs = function(stream)
   return readGlobalIdx(stream)
 end
 
@@ -464,12 +458,8 @@ instr.i64.store32 = store64("writeU32")
 
 instr.memory = {}
 instr.memory.init = {}
-instr.memory.init.evaluate = function(stream, context)
-  local dataidx, err = readDataIdx(stream)
-  if not dataidx then return nil, err end
-  local memidx, err = readMemIdx(stream)
-  if not memidx then return nil, err end
-
+instr.memory.init.evaluate = function(_, context, dataidx, memidx)
+  if not dataidx then return nil, memidx end
   local stack = context.stack
   local len, err = stack.popI32()
   if not len then return nil, err end
@@ -489,21 +479,22 @@ instr.memory.init.evaluate = function(stream, context)
 
   return true
 end
-instr.memory.init.skip = function(stream)
+instr.memory.init.collectArgs = function(stream)
   local dataidx, err = readDataIdx(stream)
   if not dataidx then return nil, err end
-  return readMemIdx(stream)
+  local memidx, err = readMemIdx(stream)
+  if not memidx then return nil, err end
+  return dataidx, memidx
 end
 
 instr.i32.const = {}
-instr.i32.const.evaluate = function(stream, context)
-  local stack = context.stack
-  local val, err = readSInt(stream, 32)
+instr.i32.const.evaluate = function(_, context, val, err)
   if not val then return nil, err end
+  local stack = context.stack
   stack.pushI32(val)
   return true
 end
-instr.i32.const.skip = function(stream)
+instr.i32.const.collectArgs = function(stream)
   return readSInt(stream, 32)
 end
 
@@ -517,14 +508,13 @@ instr.i32.add = binop32(numbers.i32.add)
 instr.i32.sub = binop32(numbers.i32.sub)
 
 instr.i64.const = {}
-instr.i64.const.evaluate = function(stream, context)
-  local stack = context.stack
-  local lh, hh = readSInt(stream, 64)
+instr.i64.const.evaluate = function(_, context, lh, hh)
   if not lh then return nil, hh end
+  local stack = context.stack
   stack.pushI64(lh, hh)
   return true
 end
-instr.i64.const.skip = function(stream)
+instr.i64.const.collectArgs = function(stream)
   return readSInt(stream, 64)
 end
 
