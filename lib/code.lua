@@ -8,8 +8,6 @@ local readU8, readInt = streamutils.readU8, streamutils.readInt
 local readNumLocals = codeparser.readNumLocals
 local SYMBOL_BR, SYMBOL_RETURN, SYMBOL_THROW
   = instructions.SYMBOL_BR, instructions.SYMBOL_RETURN, instructions.SYMBOL_THROW
-local VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, BLOCK_TYPE_EMPTY
-  = types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32, types.BLOCK_TYPE_EMPTY
 
 local function lookupInstr(stream)
   local opcode = readU8(stream)
@@ -133,7 +131,7 @@ local function evaluateFunc(stream, context, functionData)
     if localType == types.VTYPE_I64 then
       table.insert(frame.locals, { type = types.VTYPE_I64, value = 0, value2 = 0 })
     else
-      table.insert(frame.locals, { type = types.VTYPE_I32, value = 0 })
+      table.insert(frame.locals, { type = localType, value = 0 })
     end
   end
 

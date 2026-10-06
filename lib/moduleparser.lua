@@ -1,6 +1,7 @@
 local streamutils = localRequire("lib/streamutils")
 local valparser = localRequire("lib/valparser")
 local instr = localRequire("lib/instructions")
+local bits = localRequire("lib/bits")
 local types = localRequire("lib/types")
 
 local readU8, readU32, readInt, readArr, wrap_stream, readList
@@ -9,6 +10,7 @@ local readU8, readU32, readInt, readArr, wrap_stream, readList
 local readValType, readTypeIdx, readFuncIdx, readMemIdx, readExternIdx
   = valparser.readValType, valparser.readTypeIdx, valparser.readFuncIdx,
   valparser.readMemIdx, valparser.readExternIdx
+local b_bor, b_shl = bits.bor, bits.shl
 local COMP_TYPE_FUNC = types.COMP_TYPE_FUNC
 
 -- TODO: More types
@@ -25,7 +27,7 @@ local function u8BlockToU32Block(block)
     local b2 = block[i + 1] or 0
     local b3 = block[i + 2] or 0
     local b4 = block[i + 3] or 0
-    local u4 = b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)
+    local u4 = b_bor(b1, b_bor(b_shl(b2, 8), b_bor(b_shl(b3, 16), b_shl(b4, 24))))
     table.insert(compressed, u4)
   end
 
@@ -455,13 +457,13 @@ local function readModule(stream)
 
   local magic, err = readU32(stream)
   if not magic then return nil, err end
-  if magic ~= 0x0061736D then
+  if magic ~= 0x6D736100 then
     return false, "Magic signature does not match"
   end
 
   local version, err = readU32(stream)
   if not version then return nil, err end
-  if version ~= 0x01000000 then
+  if version ~= 0x00000001 then
     return false, "Only version 1 is supported"
   end
 

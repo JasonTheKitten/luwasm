@@ -30,13 +30,23 @@ local function create()
     table.insert(typeStack, types.VTYPE_I64)
   end
 
+  function handle.pushF32(v)
+    table.insert(stack, v)
+    table.insert(typeStack, types.VTYPE_F32)
+  end
+
+  function handle.pushF64(v)
+    table.insert(stack, v)
+    table.insert(typeStack, types.VTYPE_F64)
+  end
+
   function handle.pushExn(v)
     table.insert(stack, v)
     table.insert(typeStack, types.HTYPE_EXN)
   end
 
   function handle.popI32()
-    return pop1Typed(types.VTYPE_I32, "I32")
+    return pop1Typed(types.VTYPE_I32, "i32")
   end
 
   function handle.popI64()
@@ -44,12 +54,20 @@ local function create()
       return nil, STACK_EMPTY
     end
     if not handle.isType(types.VTYPE_I64) then
-      return nil, "Type Mismatch (Expected I64)"
+      return nil, "Type Mismatch (Expected i64)"
     end
     local hv = table.remove(stack)
     local lv = table.remove(stack)
     table.remove(typeStack)
     return lv, hv
+  end
+
+  function handle.popF32()
+    return pop1Typed(types.VTYPE_F32, "f32")
+  end
+
+  function handle.popF64()
+    return pop1Typed(types.VTYPE_F64, "f64")
   end
 
   function handle.popExn()
@@ -158,11 +176,11 @@ local function create()
       if paramType == types.VTYPE_I64 then
         local lv = args[argIdx] or 0
         local hv = args[argIdx + 1] or 0
-        stack.pushTyped(paramType, lv, hv)
+        handle.pushTyped(paramType, lv, hv)
         argIdx = argIdx + 2
       else
         local v = args[argIdx] or 0
-        stack.pushTyped(paramType, v)
+        handle.pushTyped(paramType, v)
         argIdx = argIdx + 1
       end
     end

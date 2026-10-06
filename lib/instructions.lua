@@ -3,14 +3,17 @@ local codeparser = localRequire("lib/codeparser")
 local numbers = localRequire("lib/numbers")
 local valparser = localRequire("lib/valparser")
 local types = localRequire("lib/types")
+local instructionsls = localRequire("lib/instructionsls")
 
-local readSInt = streamutils.readSInt
-local readMemArg, readCatches = codeparser.readMemArg, codeparser.readCatches
+local readU32, readSInt = streamutils.readU32, streamutils.readSInt
+local readCatches = codeparser.readCatches
 local readBlockType, readFuncIdx, readMemIdx, readGlobalIdx, readTagIdx, readDataIdx, readLocalIdx, readLabelIdx
-  = valparser.readBlockType, valparser.readFuncIdx, valparser.readMemIdx, valparser.readGlobalIdx,
+ = valparser.readBlockType, valparser.readFuncIdx, valparser.readMemIdx, valparser.readGlobalIdx,
   valparser.readTagIdx, valparser.readDataIdx, valparser.readLocalIdx, valparser.readLabelIdx
+local load32, load64, store32, store64, loadF32, storeF32, loadF64, storeF64
+ = instructionsls.load32, instructionsls.load64, instructionsls.store32, instructionsls.store64,
+  instructionsls.loadF32, instructionsls.storeF32, instructionsls.loadF64, instructionsls.storeF64
 
-local STACK_EMPTY = "Stack is empty"
 local NO_JUMP_POS = "No recorded jump pos"
 
 local SYMBOL_BR = {}
@@ -36,15 +39,16 @@ local function writeInt(tbl, pos, bits, value)
   return false, "Int too large to fit in bits"
 end
 
-local function unop32(op)
+local function unop(op, f1, f2)
+  if op == nil then error("A") end
   local inst = {}
   function inst.evaluate(_, context)
     local stack = context.stack
-    local c, err = stack.popI32()
-    if not c then return nil, err end
-    local res, err = op(c)
-    if res == nil then return nil, err end
-    stack.pushI32(res)
+    local c1, c2 = stack[f1]()
+    if not c1 then return nil, c2 end
+    local v1, v2 = op(c1, c2)
+    if v1 == nil then return nil, v2 end
+    stack[f2](v1, v2)
     return true
   end
   function inst.collectArgs()
@@ -53,17 +57,17 @@ local function unop32(op)
   return inst
 end
 
-local function binop32(op)
+local function binop1(op, f1, f2)
   local inst = {}
   function inst.evaluate(_, context)
     local stack = context.stack
-    local c2, err = stack.popI32()
+    local c2, err = stack[f1]()
     if not c2 then return nil, err end
-    local c1, err = stack.popI32()
+    local c1, err = stack[f1]()
     if not c1 then return nil, err end
     local res, err = op(c1, c2)
     if res == nil then return nil, err end
-    stack.pushI32(res)
+    stack[f2](res)
     return true
   end
   function inst.collectArgs()
@@ -72,154 +76,103 @@ local function binop32(op)
   return inst
 end
 
-local function testop32(op)
-  return unop32(function(a)
+local function binop2(op, f1, f2)
+  local inst = {}
+  function inst.evaluate(_, context)
+    local stack = context.stack
+    local c2l, c2h = stack[f1]()
+    if not c2l then return nil, c2h end
+    local c1l, c1h = stack[f1]()
+    if not c1l then return nil, c1h end
+    local vl, vh = op(c1l, c1h, c2l, c2h)
+    if vl == nil then return nil, vh end
+    stack[f2](vl, vh)
+    return true
+  end
+  function inst.collectArgs()
+    return true
+  end
+  return inst
+end
+
+local function unopI32(op)
+  return unop(op, "popI32", "pushI32")
+end
+
+local function binopI32(op)
+  return binop1(op, "popI32", "pushI32")
+end
+
+local function testopI32(op)
+  return unopI32(function(a)
     local val, err = op(a)
     if val == nil then return nil, err end
     return val and 1 or 0
   end)
 end
 
-local function relop32(op)
-  return binop32(function(a, b)
+local function relopI32(op)
+  return binopI32(function(a, b)
     local val, err = op(a, b)
     if val == nil then return nil, err end
     return val and 1 or 0
   end)
 end
 
-local function load32(size, signed)
-  local inst = {}
-  function inst.evaluate(_, context, align, memidx, pos)
-    if not align then return nil, memidx end
-    local memory = context.memories[memidx + 1]
-    if not memory then
-      return nil, "Memory not defined"
-    end
-
-    local stack = context.stack
-    local i, err = stack.popI32()
-    if not i then return nil, err end
-
-    local val = memory[size](i + pos)
-
-    if signed then
-      if size == "u8" and val >= 0x80 then
-        val = val + 0xFFFFFF00
-      elseif size == "u16" and val >= 0x8000 then
-        val = val + 0xFFFF0000
-      end
-    end
-
-    stack.pushI32(val)
-    return true
-  end
-
-  function inst.collectArgs(stream)
-    return readMemArg(stream)
-  end
-
-  return inst
+local function unopI64(op)
+  return unop(op, "popI64", "pushI64")
 end
 
-local function store32(sizeMethod)
-  local inst = {}
-  function inst.evaluate(_, context, align, memidx, pos)
-    if not align then return nil, memidx end
-    local memory = context.memories[memidx + 1]
-    if not memory then
-      return nil, "Memory not defined"
-    end
-
-    local stack = context.stack
-    local val, err = stack.popI32()
-    if not val then return nil, err end
-    local i, err = stack.popI32()
-    if not i then return nil, err end
-    memory[sizeMethod](i + pos, val)
-
-    return true
-  end
-
-  function inst.collectArgs(stream)
-    return readMemArg(stream)
-  end
-
-  return inst
+local function binopI64(op)
+  return binop2(op, "popI64", "pushI64")
 end
 
-local function load64(size, signed)
-  local inst = {}
-  function inst.evaluate(_, context, align, memidx, pos)
-    if not align then return nil, memidx end
-    local memory = context.memories[memidx + 1]
-    if not memory then
-      return nil, "Memory not defined"
-    end
-
-    local stack = context.stack
-    local i, err = stack.popI32()
-    if not i then return nil, err end
-
-    local low, high
-    if size == "u64" then
-      low, high = memory["u64"](i + pos)
-    else
-      local val = memory[size](i + pos)
-      low, high = val, 0
-      if signed then
-        if size == "u8" and val >= 0x80 then
-          low = val + 0xFFFFFF00
-          high = 0xFFFFFFFF
-        elseif size == "u16" and val >= 0x8000 then
-          low = val + 0xFFFF0000
-          high = 0xFFFFFFFF
-        elseif size == "u32" and val >= 0x80000000 then
-          high = 0xFFFFFFFF
-        end
-      end
-    end
-
-    stack.pushI64(low, high)
-    return true
-  end
-
-  function inst.collectArgs(stream)
-    return readMemArg(stream)
-  end
-
-  return inst
+local function testopI64(op)
+  return unop(function(al, ah)
+    local val, err = op(al, ah)
+    if val == nil then return nil, err end
+    return val and 1 or 0
+  end, "popI64", "pushI32")
 end
 
-local function store64(sizeMethod)
-  local inst = {}
-  function inst.evaluate(_, context, align, memidx, pos)
-    if not align then return nil, memidx end
-    local memory = context.memories[memidx + 1]
-    if not memory then
-      return nil, "Memory not defined"
-    end
+local function relopI64(op)
+  return binop2(function(al, ah, bl, bh)
+    local val, err = op(al, ah, bl, bh)
+    if val == nil then return nil, err end
+    return val and 1 or 0
+  end, "popI64", "pushI32")
+end
 
-    local stack = context.stack
-    local low, high = stack.popI64()
-    if not low then return nil, high end
-    local i, err = stack.popI32()
-    if not i then return nil, err end
+local function unopF32(op)
+  return unop(op, "popF32", "pushF32")
+end
 
-    if sizeMethod == "writeU64" then
-      memory["writeU64"](i + pos, low, high)
-    else
-      memory[sizeMethod](i + pos, low)
-    end
+local function binopF32(op)
+  return binop1(op, "popF32", "pushF32")
+end
 
-    return true
-  end
+local function relopF32(op)
+  return binop1(function(a, b)
+    local val, err = op(a, b)
+    if val == nil then return nil, err end
+    return val and 1 or 0
+  end, "popF32", "pushI32")
+end
 
-  function inst.collectArgs(stream)
-    return readMemArg(stream)
-  end
+local function unopF64(op)
+  return unop(op, "popF64", "pushF64")
+end
 
-  return inst
+local function binopF64(op)
+  return binop1(op, "popF64", "pushF64")
+end
+
+local function relopF64(op)
+  return binop1(function(a, b)
+    local val, err = op(a, b)
+    if val == nil then return nil, err end
+    return val and 1 or 0
+  end, "popF64", "pushI32")
 end
 
 instr._ = {}
@@ -473,8 +426,8 @@ instr["local"].set = {}
 instr["local"].set.evaluate = function(_, context, localIdx, err)
   if not localIdx then return nil, err end
   local stack = context.stack
-  local loc = stack.toLocal()
-  if not loc then return nil, STACK_EMPTY end
+  local loc, err = stack.toLocal()
+  if not loc then return nil, err end
   stack.drop()
   context.frame.locals[localIdx + 1] = loc
   return true
@@ -487,8 +440,8 @@ instr["local"].tee = {}
 instr["local"].tee.evaluate = function(_, context, localIdx, err)
   if not localIdx then return nil, err end
   local stack = context.stack
-  local loc = stack.toLocal()
-  if not loc then return nil, STACK_EMPTY end
+  local loc, err = stack.toLocal()
+  if not loc then return nil, err end
   context.frame.locals[localIdx + 1] = loc
   return true
 end
@@ -508,6 +461,33 @@ instr.global.get.evaluate = function(_, context, globalidx, err)
   return true
 end
 instr.global.get.collectArgs = function(stream)
+  return readGlobalIdx(stream)
+end
+
+instr.global.set = {}
+instr.global.set.evaluate = function(_, context, globalidx, err)
+  if not globalidx then return nil, err end
+  local global = context.globals[globalidx + 1]
+  if not global then
+    return nil, "Global not defined"
+  end
+  if not global.mutable then
+    return nil, "Global is not mutable"
+  end
+
+  local newGlobal, err = context.stack.toLocal(global)
+  context.stack.drop()
+  if not newGlobal then return nil, err end
+
+  if newGlobal.type ~= global.type then
+    return nil, "Global type mismatch"
+  end
+  global.value = newGlobal.value
+  global.value2 = newGlobal.value2
+
+  return true
+end
+instr.global.set.collectArgs = function(stream)
   return readGlobalIdx(stream)
 end
 
@@ -540,6 +520,14 @@ instr.i64.store = store64("writeU64")
 instr.i64.store8 = store64("writeU8")
 instr.i64.store16 = store64("writeU16")
 instr.i64.store32 = store64("writeU32")
+
+instr.f32 = {}
+instr.f32.load = loadF32()
+instr.f32.store = storeF32()
+
+instr.f64 = {}
+instr.f64.load = loadF64()
+instr.f64.store = storeF64()
 
 instr.memory = {}
 instr.memory.init = {}
@@ -583,14 +571,53 @@ instr.i32.const.collectArgs = function(stream)
   return readSInt(stream, 32) % I33
 end
 
-instr.i32.eqz = testop32(numbers.i32.eqz)
-instr.i32.eq = relop32(numbers.i32.eq)
-instr.i32.ne = relop32(numbers.i32.ne)
-instr.i32.lt_s = relop32(numbers.i32.lt_s)
-instr.i32.gt_s = relop32(numbers.i32.gt_s)
+instr.i32.eqz = testopI32(numbers.i32.eqz)
+instr.i32.eq = relopI32(numbers.i32.eq)
+instr.i32.ne = relopI32(numbers.i32.ne)
+instr.i32.lt_s = relopI32(numbers.i32.lt_s)
+instr.i32.lt_u = relopI32(numbers.i32.lt_u)
+instr.i32.gt_s = relopI32(numbers.i32.gt_s)
+instr.i32.gt_u = relopI32(numbers.i32.gt_u)
+instr.i32.le_s = relopI32(numbers.i32.le_s)
+instr.i32.le_u = relopI32(numbers.i32.le_u)
+instr.i32.ge_s = relopI32(numbers.i32.ge_s)
+instr.i32.ge_u = relopI32(numbers.i32.ge_u)
 
-instr.i32.add = binop32(numbers.i32.add)
-instr.i32.sub = binop32(numbers.i32.sub)
+instr.i32.clz = unopI32(numbers.i32.ctz)
+instr.i32.ctz = unopI32(numbers.i32.ctz)
+instr.i32.popcnt = unopI32(numbers.i32.popcnt)
+
+instr.i32.add = binopI32(numbers.i32.add)
+instr.i32.sub = binopI32(numbers.i32.sub)
+instr.i32.mul = binopI32(numbers.i32.mul)
+instr.i32.div_s = binopI32(numbers.i32.div_s)
+instr.i32.div_u = binopI32(numbers.i32.div_u)
+instr.i32.rem_s = binopI32(numbers.i32.rem_s)
+instr.i32.rem_u = binopI32(numbers.i32.rem_u)
+
+instr.i32["and"] = binopI32(numbers.i32["and"])
+instr.i32["or"] = binopI32(numbers.i32["or"])
+instr.i32.xor = binopI32(numbers.i32.xor)
+instr.i32.shl = binopI32(numbers.i32.shl)
+instr.i32.shr_s = binopI32(numbers.i32.shr_s)
+instr.i32.shr_u = binopI32(numbers.i32.shr_u)
+instr.i32.rotl = binopI32(numbers.i32.rotl)
+instr.i32.rotr = binopI32(numbers.i32.rotr)
+
+instr.i32.wrap_i64 = unop(numbers.i32.wrap_i64, "popI64", "pushI32")
+instr.i32.trunc_f32_s = unop(numbers.i32.trunc_f32_s, "popF32", "pushI32")
+instr.i32.trunc_f32_u = unop(numbers.i32.trunc_f32_u, "popF32", "pushI32")
+instr.i32.trunc_f64_s = unop(numbers.i32.trunc_f64_s, "popF64", "pushI32")
+instr.i32.trunc_f64_u = unop(numbers.i32.trunc_f64_u, "popF64", "pushI32")
+instr.i32.reinterpret_f32 = unop(numbers.i32.reinterpret_f32, "popF32", "pushI32")
+
+instr.i32.extend8_s = unopI32(numbers.i32.extend8_s)
+instr.i32.extend16_s = unopI32(numbers.i32.extend16_s)
+
+instr.i32.trunc_sat_f32_s = unop(numbers.i32.trunc_sat_f32_s, "popF32", "pushI32")
+instr.i32.trunc_sat_f32_u = unop(numbers.i32.trunc_sat_f32_u, "popF32", "pushI32")
+instr.i32.trunc_sat_f64_s = unop(numbers.i32.trunc_sat_f64_s, "popF64", "pushI32")
+instr.i32.trunc_sat_f64_u = unop(numbers.i32.trunc_sat_f64_u, "popF64", "pushI32")
 
 instr.i64.const = {}
 instr.i64.const.evaluate = function(_, context, lh, hh)
@@ -605,8 +632,157 @@ instr.i64.const.collectArgs = function(stream)
   return lh % I33, hh % I33
 end
 
-local memtblSubOps = {
+instr.i64.eqz = testopI64(numbers.i64.eqz)
+instr.i64.eq = relopI64(numbers.i64.eq)
+instr.i64.ne = relopI64(numbers.i64.ne)
+instr.i64.lt_s = relopI64(numbers.i64.lt_s)
+instr.i64.lt_u = relopI64(numbers.i64.lt_u)
+instr.i64.gt_s = relopI64(numbers.i64.gt_s)
+instr.i64.gt_u = relopI64(numbers.i64.gt_u)
+instr.i64.le_s = relopI64(numbers.i64.le_s)
+instr.i64.le_u = relopI64(numbers.i64.le_u)
+instr.i64.ge_s = relopI64(numbers.i64.ge_s)
+instr.i64.ge_u = relopI64(numbers.i64.ge_u)
+
+instr.i64.clz = unopI64(numbers.i64.clz)
+instr.i64.ctz = unopI64(numbers.i64.ctz)
+instr.i64.popcnt = unopI64(numbers.i64.popcnt)
+
+instr.i64.add = binopI64(numbers.i64.add)
+instr.i64.sub = binopI64(numbers.i64.sub)
+instr.i64.mul = binopI64(numbers.i64.mul)
+instr.i64.div_s = binopI64(numbers.i64.div_s)
+instr.i64.div_u = binopI64(numbers.i64.div_u)
+instr.i64.rem_s = binopI64(numbers.i64.rem_s)
+instr.i64.rem_u = binopI64(numbers.i64.rem_u)
+
+instr.i64["and"] = binopI64(numbers.i64["and"])
+instr.i64["or"] = binopI64(numbers.i64["or"])
+instr.i64.xor = binopI64(numbers.i64.xor)
+instr.i64.shl = binopI64(numbers.i64.shl)
+instr.i64.shr_s = binopI64(numbers.i64.shr_s)
+instr.i64.shr_u = binopI64(numbers.i64.shr_u)
+instr.i64.rotl = binopI64(numbers.i64.rotl)
+instr.i64.rotr = binopI64(numbers.i64.rotr)
+
+instr.i64.extend_i32_s = unop(numbers.i64.extend_i32_s, "popI32", "pushI64")
+instr.i64.extend_i32_u = unop(numbers.i64.extend_i32_u, "popI32", "pushI64")
+instr.i64.trunc_f32_s = unop(numbers.i64.trunc_f32_s, "popF32", "pushI64")
+instr.i64.trunc_f32_u = unop(numbers.i64.trunc_f32_u, "popF32", "pushI64")
+instr.i64.trunc_f64_s = unop(numbers.i64.trunc_f64_s, "popF64", "pushI64")
+instr.i64.trunc_f64_u = unop(numbers.i64.trunc_f64_u, "popF64", "pushI64")
+instr.i64.reinterpret_f64 = unop(numbers.i64.reinterpret_f64, "popF64", "pushI64")
+
+instr.i64.extend8_s = unopI64(numbers.i64.extend8_s)
+instr.i64.extend16_s = unopI64(numbers.i64.extend16_s)
+instr.i64.extend32_s = unopI64(numbers.i64.extend_i32_s)
+
+instr.i64.trunc_sat_f32_s = unop(numbers.i64.trunc_sat_f32_s, "popF32", "pushI64")
+instr.i64.trunc_sat_f32_u = unop(numbers.i64.trunc_sat_f32_u, "popF32", "pushI64")
+instr.i64.trunc_sat_f64_s = unop(numbers.i64.trunc_sat_f64_s, "popF64", "pushI64")
+instr.i64.trunc_sat_f64_u = unop(numbers.i64.trunc_sat_f64_u, "popF64", "pushI64")
+
+instr.f32.const = {}
+instr.f32.const.evaluate = function(_, context, val, err)
+  if not val then return nil, err end
+  local stack = context.stack
+  stack.pushF32(val)
+  return true
+end
+instr.f32.const.collectArgs = function(stream)
+  local bits, err = readU32(stream)
+  if not bits then return nil, err end
+  return numbers.f32.reinterpret_i32(bits)
+end
+
+instr.f32.eq = relopF32(numbers.f32.eq)
+instr.f32.ne = relopF32(numbers.f32.ne)
+instr.f32.lt = relopF32(numbers.f32.lt)
+instr.f32.gt = relopF32(numbers.f32.gt)
+instr.f32.le = relopF32(numbers.f32.le)
+instr.f32.ge = relopF32(numbers.f32.ge)
+
+instr.f32.abs = unopF32(numbers.f32.abs)
+instr.f32.neg = unopF32(numbers.f32.neg)
+instr.f32.ceil = unopF32(numbers.f32.ceil)
+instr.f32.floor = unopF32(numbers.f32.floor)
+instr.f32.trunc = unopF32(numbers.f32.trunc)
+instr.f32.nearest = unopF32(numbers.f32.nearest)
+instr.f32.sqrt = unopF32(numbers.f32.sqrt)
+
+instr.f32.add = binopF32(numbers.f32.add)
+instr.f32.sub = binopF32(numbers.f32.sub)
+instr.f32.mul = binopF32(numbers.f32.mul)
+instr.f32.div = binopF32(numbers.f32.div)
+instr.f32.min = binopF32(numbers.f32.min)
+instr.f32.max = binopF32(numbers.f32.max)
+instr.f32.copysign = binopF32(numbers.f32.copysign)
+
+instr.f32.convert_i32_s = unop(numbers.f32.convert_i32_s, "popI32", "pushF32")
+instr.f32.convert_i32_u = unop(numbers.f32.convert_i32_u, "popI32", "pushF32")
+instr.f32.convert_i64_s = unop(numbers.f32.convert_i64_s, "popI64", "pushF32")
+instr.f32.convert_i64_u = unop(numbers.f32.convert_i64_u, "popI64", "pushF32")
+instr.f32.demote_f64 = unop(numbers.f32.demote_f64, "popF64", "pushF32")
+instr.f32.reinterpret_i32 = unop(numbers.f32.reinterpret_i32, "popI32", "pushF32")
+
+instr.f64.const = {}
+instr.f64.const.evaluate = function(_, context, val, err)
+  if not val then return nil, err end
+  local stack = context.stack
+  stack.pushF64(val)
+  return true
+end
+instr.f64.const.collectArgs = function(stream)
+  local low, err = readU32(stream)
+  if not low then return nil, err end
+
+  local high, err2 = readU32(stream)
+  if not high then return nil, err2 end
+
+  return numbers.f64.reinterpret_i64(low, high)
+end
+
+-- Float64 uses the xop32 functions despite being 64 bit
+instr.f64.eq = relopF64(numbers.f64.eq)
+instr.f64.ne = relopF64(numbers.f64.ne)
+instr.f64.lt = relopF64(numbers.f64.lt)
+instr.f64.gt = relopF64(numbers.f64.gt)
+instr.f64.le = relopF64(numbers.f64.le)
+instr.f64.ge = relopF64(numbers.f64.ge)
+
+instr.f64.abs = unopF64(numbers.f64.abs)
+instr.f64.neg = unopF64(numbers.f64.neg)
+instr.f64.ceil = unopF64(numbers.f64.ceil)
+instr.f64.floor = unopF64(numbers.f64.floor)
+instr.f64.trunc = unopF64(numbers.f64.trunc)
+instr.f64.nearest = unopF64(numbers.f64.nearest)
+instr.f64.sqrt = unopF64(numbers.f64.sqrt)
+
+instr.f64.add = binopF64(numbers.f64.add)
+instr.f64.sub = binopF64(numbers.f64.sub)
+instr.f64.mul = binopF64(numbers.f64.mul)
+instr.f64.div = binopF64(numbers.f64.div)
+instr.f64.min = binopF64(numbers.f64.min)
+instr.f64.max = binopF64(numbers.f64.max)
+instr.f64.copysign = binopF64(numbers.f64.copysign)
+
+instr.f64.convert_i32_s = unop(numbers.f64.convert_i32_s, "popI32", "pushF64")
+instr.f64.convert_i32_u = unop(numbers.f64.convert_i32_u, "popI32", "pushF64")
+instr.f64.convert_i64_s = unop(numbers.f64.convert_i64_s, "popI64", "pushF64")
+instr.f64.convert_i64_u = unop(numbers.f64.convert_i64_u, "popI64", "pushF64")
+instr.f64.promote_f32 = unop(numbers.f64.promote_f32, "popF32", "pushF64")
+instr.f64.reinterpret_i64 = unop(numbers.f64.reinterpret_i64, "popI64", "pushF64")
+
+local fcSubOps = {
   _subop = true,
+  [0] = instr.i32.trunc_sat_f32_s,
+  [1] = instr.i32.trunc_sat_f32_u,
+  [2] = instr.i32.trunc_sat_f64_s,
+  [3] = instr.i32.trunc_sat_f64_u,
+  [4] = instr.i64.trunc_sat_f32_s,
+  [5] = instr.i64.trunc_sat_f32_u,
+  [6] = instr.i64.trunc_sat_f64_s,
+  [7] = instr.i64.trunc_sat_f64_u,
   [8] = instr.memory.init
 }
 
@@ -630,8 +806,11 @@ instr._lookup = {
   [0x21] = instr["local"].set,
   [0x22] = instr["local"].tee,
   [0x23] = instr.global.get,
+  [0x24] = instr.global.set,
   [0x28] = instr.i32.load,
   [0x29] = instr.i64.load,
+  [0x2A] = instr.f32.load,
+  [0x2B] = instr.f64.load,
   [0x2C] = instr.i32.load8_s,
   [0x2D] = instr.i32.load8_u,
   [0x2E] = instr.i32.load16_s,
@@ -644,6 +823,8 @@ instr._lookup = {
   [0x35] = instr.i64.load32_u,
   [0x36] = instr.i32.store,
   [0x37] = instr.i64.store,
+  [0x38] = instr.f32.store,
+  [0x39] = instr.f64.store,
   [0x3A] = instr.i32.store8,
   [0x3B] = instr.i32.store16,
   [0x3C] = instr.i64.store8,
@@ -651,14 +832,137 @@ instr._lookup = {
   [0x3E] = instr.i64.store32,
   [0x41] = instr.i32.const,
   [0x42] = instr.i64.const,
+  [0x43] = instr.f32.const,
+  [0x44] = instr.f64.const,
   [0x45] = instr.i32.eqz,
   [0x46] = instr.i32.eq,
   [0x47] = instr.i32.ne,
   [0x48] = instr.i32.lt_s,
+  [0x49] = instr.i32.lt_u,
   [0x4A] = instr.i32.gt_s,
+  [0x4B] = instr.i32.gt_u,
+  [0x4C] = instr.i32.le_s,
+  [0x4D] = instr.i32.le_u,
+  [0x4E] = instr.i32.ge_s,
+  [0x4F] = instr.i32.ge_u,
+  [0x50] = instr.i64.eqz,
+  [0x51] = instr.i64.eq,
+  [0x52] = instr.i64.ne,
+  [0x53] = instr.i64.lt_s,
+  [0x54] = instr.i64.lt_u,
+  [0x55] = instr.i64.gt_s,
+  [0x56] = instr.i64.gt_u,
+  [0x57] = instr.i64.le_s,
+  [0x58] = instr.i64.le_u,
+  [0x59] = instr.i64.ge_s,
+  [0x5A] = instr.i64.ge_u,
+  [0x5B] = instr.f32.eq,
+  [0x5C] = instr.f32.ne,
+  [0x5D] = instr.f32.lt,
+  [0x5E] = instr.f32.gt,
+  [0x5F] = instr.f32.le,
+  [0x60] = instr.f32.ge,
+  [0x61] = instr.f64.eq,
+  [0x62] = instr.f64.ne,
+  [0x63] = instr.f64.lt,
+  [0x64] = instr.f64.gt,
+  [0x65] = instr.f64.le,
+  [0x66] = instr.f64.ge,
+  [0x67] = instr.i32.clz,
+  [0x68] = instr.i32.ctz,
+  [0x69] = instr.i32.popcnt,
   [0x6A] = instr.i32.add,
   [0x6B] = instr.i32.sub,
-  [0xFC] = memtblSubOps
+  [0x6C] = instr.i32.mul,
+  [0x6D] = instr.i32.div_s,
+  [0x6E] = instr.i32.div_u,
+  [0x6F] = instr.i32.rem_s,
+  [0x70] = instr.i32.rem_u,
+  [0x71] = instr.i32["and"],
+  [0x72] = instr.i32["or"],
+  [0x73] = instr.i32.xor,
+  [0x74] = instr.i32.shl,
+  [0x75] = instr.i32.shr_s,
+  [0x76] = instr.i32.shr_u,
+  [0x77] = instr.i32.rotl,
+  [0x78] = instr.i32.rotr,
+  [0x79] = instr.i64.clz,
+  [0x7A] = instr.i64.ctz,
+  [0x7B] = instr.i64.popcnt,
+  [0x7C] = instr.i64.add,
+  [0x7D] = instr.i64.sub,
+  [0x7E] = instr.i64.mul,
+  [0x7F] = instr.i64.div_s,
+  [0x80] = instr.i64.div_u,
+  [0x81] = instr.i64.rem_s,
+  [0x82] = instr.i64.rem_u,
+  [0x83] = instr.i64["and"],
+  [0x84] = instr.i64["or"],
+  [0x85] = instr.i64.xor,
+  [0x86] = instr.i64.shl,
+  [0x87] = instr.i64.shr_s,
+  [0x88] = instr.i64.shr_u,
+  [0x89] = instr.i64.rotl,
+  [0x8A] = instr.i64.rotr,
+  [0xFC] = fcSubOps,
+  [0x8B] = instr.f32.abs,
+  [0x8C] = instr.f32.neg,
+  [0x8D] = instr.f32.ceil,
+  [0x8E] = instr.f32.floor,
+  [0x8F] = instr.f32.trunc,
+  [0x90] = instr.f32.nearest,
+  [0x91] = instr.f32.sqrt,
+  [0x92] = instr.f32.add,
+  [0x93] = instr.f32.sub,
+  [0x94] = instr.f32.mul,
+  [0x95] = instr.f32.div,
+  [0x96] = instr.f32.min,
+  [0x97] = instr.f32.max,
+  [0x98] = instr.f32.copysign,
+  [0x99] = instr.f64.abs,
+  [0x9A] = instr.f64.neg,
+  [0x9B] = instr.f64.ceil,
+  [0x9C] = instr.f64.floor,
+  [0x9D] = instr.f64.trunc,
+  [0x9E] = instr.f64.nearest,
+  [0x9F] = instr.f64.sqrt,
+  [0xA0] = instr.f64.add,
+  [0xA1] = instr.f64.sub,
+  [0xA2] = instr.f64.mul,
+  [0xA3] = instr.f64.div,
+  [0xA4] = instr.f64.min,
+  [0xA5] = instr.f64.max,
+  [0xA6] = instr.f64.copysign,
+  [0xA7] = instr.i32.wrap_i64,
+  [0xA8] = instr.i32.trunc_f32_s,
+  [0xA9] = instr.i32.trunc_f32_u,
+  [0xAA] = instr.i32.trunc_f64_s,
+  [0xAB] = instr.i32.trunc_f64_u,
+  [0xAC] = instr.i64.extend_i32_s,
+  [0xAD] = instr.i64.extend_i32_u,
+  [0xAE] = instr.i64.trunc_f32_s,
+  [0xAF] = instr.i64.trunc_f32_u,
+  [0xB0] = instr.i64.trunc_f64_s,
+  [0xB1] = instr.i64.trunc_f64_u,
+  [0xB2] = instr.f32.convert_i32_s,
+  [0xB3] = instr.f32.convert_i32_u,
+  [0xB4] = instr.f32.convert_i64_s,
+  [0xB5] = instr.f32.convert_i64_u,
+  [0xB6] = instr.f32.demote_f64,
+  [0xB7] = instr.f64.convert_i32_s,
+  [0xB8] = instr.f64.convert_i32_u,
+  [0xB9] = instr.f64.convert_i64_s,
+  [0xBA] = instr.f64.convert_i64_u,
+  [0xBB] = instr.f64.promote_f32,
+  [0xBC] = instr.i32.reinterpret_f32,
+  [0xBD] = instr.i64.reinterpret_f64,
+  [0xBE] = instr.f32.reinterpret_i32,
+  [0xBF] = instr.f64.reinterpret_i64,
+  [0xC0] = instr.i32.extend8_s,
+  [0xC1] = instr.i32.extend16_s,
+  [0xC2] = instr.i64.extend8_s,
+  [0xC3] = instr.i64.extend16_s,
+  [0xC4] = instr.i64.extend32_s,
 }
 
 instr.SYMBOL_BR = SYMBOL_BR

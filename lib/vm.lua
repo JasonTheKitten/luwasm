@@ -49,9 +49,13 @@ local function createVM(module)
   local globals = {}
   local globalsList = module.globalSection and module.globalSection.globals or {}
   for k, v in ipairs(globalsList) do
+    local ok, value, value2 = evaluateConstantExpr(v.expr)
+    if not ok then return value end
     globals[k] = {
-      value = 0, -- TODO: But what if it is 64-bit?
-      info = v
+      type = v.type.type,
+      mutable = v.type.mutable,
+      value = value,
+      value2 = value2
     }
   end
 

@@ -14,7 +14,7 @@ local function readU16(stream)
   if not b1 then return nil, err end
   local b2, err = readU8(stream)
   if not b2 then return nil, err end
-  return bits.shl(b1, 8) + b2
+  return b1 + bits.shl(b2, 8)
 end
 
 local function read32(stream)
@@ -22,7 +22,7 @@ local function read32(stream)
   if not b1 then return nil, err end
   local b2, err = readU16(stream)
   if not b2 then return nil, err end
-  return bits.shl(b1, 16) + b2
+  return b1 + bits.shl(b2, 16)
 end
 
 local function readLEB(stream, n)
