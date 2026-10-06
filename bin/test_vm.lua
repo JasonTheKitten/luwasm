@@ -49,6 +49,9 @@ local args = { ... }
 if not args[1] then
   error("Must specify a valid module file")
 end
+if not args[2] then
+  error("Must specify function to call")
+end
 
 local moduleParser = localRequire("lib/moduleparser")
 local testModule = args[1]
@@ -60,4 +63,6 @@ if not module then error(err) end
 
 local vmCreator = localRequire("lib/vm")
 local vm = assert(vmCreator.createVM(module))
+-- print(assert(vm.exports[args[2]]()))
 print(assert(vm.exports.__wasm_call_ctors()))
+print(assert(vm.exports.init_game()))

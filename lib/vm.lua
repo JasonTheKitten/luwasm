@@ -4,7 +4,7 @@ local codeLib = localRequire("lib/code")
 local stackLib = localRequire("lib/stack")
 local instructions = localRequire("lib/instructions")
 
-local COMP_TYPE_FUNC, COMP_TYPE_MEM = types.COMP_TYPE_FUNC, types.COMP_TYPE_MEM
+local RTYPE_FUNC, COMP_TYPE_MEM = types.RTYPE_FUNC, types.COMP_TYPE_MEM
 
 local function evaluateConstantExpr(expr)
   local memory = memoryLib.createBackedU32Memory(expr.data, expr.len)
@@ -39,10 +39,37 @@ local function createVM(module)
   for _, v in ipairs(typesList) do
     for _, v2 in ipairs(v.types) do
       for _, v3 in ipairs(v2) do
-        if v3.type == COMP_TYPE_FUNC then
+        if v3.type == RTYPE_FUNC then
           table.insert(types, { numArgs = #v3.params, params = v3.params, rtn = v3.rtn })
         end
       end
+    end
+  end
+
+  local tables = {}
+  local tablesList = module.tableSection and module.tableSection.tables or {}
+  for k, v in ipairs(tablesList) do
+    local refs = {}
+    for _=1, v.limit.min do
+      table.insert(refs, { type = types.RTYPE_NULL })
+    end
+    tables[k] = {
+      type = v.type,
+      limit = v.limit,
+      refs = refs
+    }
+  end
+
+  local elemList = module.elemSection and module.elemSection.elements or {}
+  for _, v in ipairs(elemList) do
+    local target = tables[v.tableidx + 1].refs
+    local ok, offset = true, 0
+    if v.active then
+      ok, offset = evaluateConstantExpr(v.offsetExpr)
+      if not ok then return nil, offset end
+    end
+    for k, v2 in ipairs(v.refs) do
+      target[offset + k] = instructions.ref.func.new(v2)
     end
   end
 
@@ -147,7 +174,7 @@ local function createVM(module)
   local exports = {}
   local exportsList = module.exportSection and module.exportSection.exports or {}
   for _, v in ipairs(exportsList) do
-    if v.type.type == COMP_TYPE_FUNC then
+    if v.type.type == RTYPE_FUNC then
       exports[v.name] = function(...)
         local context = codeLib.newContext()
         local stack, err = createStack(v.type.idx, {...})
@@ -156,6 +183,7 @@ local function createVM(module)
         context.frame.frameIndex = stack.size() + 1
         context.memories = memories
         context.data = dataSegmentList
+        context.tables = tables
         context.globals = globals
         context.tags = tags
         context.functions = functions

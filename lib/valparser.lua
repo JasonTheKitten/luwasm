@@ -3,10 +3,10 @@ local types = localRequire("lib/types")
 
 local readU8, readInt, readSInt = streamutils.readU8, streamutils.readInt, streamutils.readSInt
 local
-  COMP_TYPE_FUNC, COMP_TYPE_MEM, BLOCK_TYPE_EMPTY,
+  RTYPE_FUNC, COMP_TYPE_MEM, BLOCK_TYPE_EMPTY,
   VTYPE_F64, VTYPE_F32, VTYPE_I64, VTYPE_I32, 
   HTYPE_EXN
-  = types.COMP_TYPE_FUNC, types.COMP_TYPE_FUNC, types.BLOCK_TYPE_EMPTY,
+  = types.RTYPE_FUNC, types.RTYPE_FUNC, types.BLOCK_TYPE_EMPTY,
   types.VTYPE_F64, types.VTYPE_F32, types.VTYPE_I64, types.VTYPE_I32,
   types.HTYPE_EXN
 
@@ -73,6 +73,7 @@ end
 
 local readTypeIdx = readIdx
 local readFuncIdx = readIdx
+local readTableIdx = readIdx
 local readMemIdx = readIdx
 local readGlobalIdx = readIdx
 local readTagIdx = readIdx
@@ -86,7 +87,7 @@ local function readExternIdx(stream)
   -- TODO: Support other options
   local type
   if subop == 0x00 then
-    type = COMP_TYPE_FUNC
+    type = RTYPE_FUNC
   elseif subop == 0x02 then
     type = COMP_TYPE_MEM
   else
@@ -105,6 +106,7 @@ return {
   readValType = readValType,
   readBlockType = readBlockType,
   readTypeIdx = readTypeIdx,
+  readTableIdx = readTableIdx,
   readFuncIdx = readFuncIdx,
   readMemIdx = readMemIdx,
   readGlobalIdx = readGlobalIdx,

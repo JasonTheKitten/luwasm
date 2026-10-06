@@ -76,8 +76,13 @@ local function readCatches(stream)
   return readList(stream, readCatch)
 end
 
+local function readValTypeList(stream)
+  return readList(stream, readValType)
+end
+
 return {
   readNumLocals = readNumLocals,
   readMemArg = readMemArg,
-  readCatches = readCatches
+  readCatches = readCatches,
+  readValTypeList = readValTypeList
 }

@@ -11,11 +11,11 @@ local readValType, readTypeIdx, readFuncIdx, readMemIdx, readExternIdx
   = valparser.readValType, valparser.readTypeIdx, valparser.readFuncIdx,
   valparser.readMemIdx, valparser.readExternIdx
 local b_bor, b_shl = bits.bor, bits.shl
-local COMP_TYPE_FUNC = types.COMP_TYPE_FUNC
+local RTYPE_FUNC = types.RTYPE_FUNC
 
 -- TODO: More types
 local HEAP_TYPES = {
-  [0x70] = COMP_TYPE_FUNC
+  [0x70] = RTYPE_FUNC
 }
 
 -- Compress to a u32 block to save memory
@@ -34,10 +34,12 @@ local function u8BlockToU32Block(block)
   return compressed
 end
 
+---@diagnostic disable-next-line: deprecated
+local unpack = unpack or table.unpack
 local function readName(stream)
   local bytes, err = readList(stream, readU8)
   if not bytes then return nil, err end
-  return string.char(table.unpack(bytes))
+  return string.char(unpack(bytes))
 end
 
 local function readExpr(stream)
@@ -76,7 +78,7 @@ local function readComptype(stream)
   if not rtn then return nil, err end
 
   return {
-    type = COMP_TYPE_FUNC,
+    type = RTYPE_FUNC,
     params = params,
     rtn = rtn
   }
@@ -226,20 +228,12 @@ local function readElem(stream)
     local expr = readExpr(stream)
     local idxs = readList(stream, readFuncIdx)
 
-    -- TODO: Is this the right way to handle this?
-    local funcExpr = {}
-    local funcExprPos = 1
-    for _, idx in ipairs(idxs) do
-      funcExprPos, err = instr.ref.func.write(funcExpr, funcExprPos, idx)
-      if not funcExprPos then return nil, err end
-    end
-
     return {
-      type = COMP_TYPE_FUNC,
+      type = RTYPE_FUNC,
       active = true,
-      elemExprs = funcExpr,
+      refs = idxs,
       tableidx = 0,
-      modeExpr = expr
+      offsetExpr = expr
     }
   else
     return false, "Only func is supported at this time"

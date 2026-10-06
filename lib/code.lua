@@ -60,39 +60,42 @@ local function determineBlockIO(context, blockType1, blockType2)
     end
 
     inputs, outputs = #type.params, #type.rtn
-  else
+  elseif blockType1 ~= types.BLOCK_TYPE_EMPTY then
     inputs, outputs = 0, 1
   end
   return inputs, outputs
 end
 
-local function evaluateBlock(stream, context, blockType1, blockType2, allowElse)
+local function evaluateBlock(stream, context, blockType1, blockType2, allowElse, isLoop)
   local inputs, outputs = determineBlockIO(context, blockType1, blockType2)
   if not inputs then return nil, outputs end
   local stack = context.stack
   local stackArity = stack.size() - inputs
   local startPos = stream:pos()
   local ok, err = evaluate(stream, context, allowElse)
-  if not ok and type(err) == "table" and err.symbol == SYMBOL_BR then
+  
+  local isErrTable = not ok and type(err) == "table"
+  -- Editor is not smart enough to realize err is non-nil when isErrTable
+  if err ~= nil and isErrTable and err.symbol == SYMBOL_BR then
     if err.depth == 0 then
       local jumpPos = context.frame.jumpMap[startPos]
       if not jumpPos then
         return false, "No recorded jump pos"
       end
       stream:seek(jumpPos + 1)
-      ok, err = stack.unwind(stackArity, outputs)
+
+      local expectedResults = isLoop and inputs or outputs
+
+      ok, err = stack.unwind(stackArity, expectedResults)
       if not ok then return nil, err end
       return true, true
-    elseif not ok and type(err) == "table" and err.symbol == SYMBOL_RETURN then
-      local ok, err2 = stack.unwind(stackArity, outputs)
-      if not ok then return nil, err2 end
-      return nil, err
     else
       err.depth = err.depth - 1
       return nil, err
     end
+  elseif err ~= nil then
+    return nil, err
   end
-  if not ok then return nil, err end
 
   ok, err = stack.unwind(stackArity, outputs)
   if not ok then return nil, err end
@@ -120,8 +123,7 @@ local function evaluateFunc(stream, context, functionData)
   local numArgs = functionData.numArgs
 
   for i = numArgs, 1, -1 do
-    local loc, err = stack.toLocal()
-    stack.drop()
+    local loc, err = stack.popLocal()
     if not loc then return nil, err end
     frame.locals[i] = loc
   end
@@ -141,10 +143,18 @@ local function evaluateFunc(stream, context, functionData)
 
   context.frame = oldFrame
 
-  if not ok and type(err) == "table" and err.symbol == SYMBOL_THROW then
-    stack.unwind(frameIndex, 1)
+  local isErrTable = not ok and type(err) == "table"
+  if err ~= nil and isErrTable then
+    if err.symbol == SYMBOL_THROW then
+      stack.unwind(frameIndex, 1)
+      return nil, err
+    elseif err.symbol == SYMBOL_RETURN then
+      return true, frameIndex
+    elseif err.symbol == SYMBOL_BR then
+      return true, frameIndex
+    end
     return nil, err
-  elseif not ok and not (type(err) == "table" and err.symbol == SYMBOL_RETURN) then
+  elseif not ok then
     return nil, err
   end
 

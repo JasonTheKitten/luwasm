@@ -12,11 +12,11 @@ if bit32 then
   bor = bit32.bor
   bxor = bit32.bxor
   ---@diagnostic disable: undefined-field
-  bnot32 = bit32.bnot32
+  bnot32 = bit32.bnot
   ---@diagnostic disable: undefined-field
-  rotl32 = bit32.lrotate32
+  rotl32 = bit32.lrotate
   ---@diagnostic disable: undefined-field
-  rotr32 = bit32.rrotate32
+  rotr32 = bit32.rrotate
 elseif bit then
   shl = bit.lshift
   shr = bit.rshift

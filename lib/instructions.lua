@@ -7,11 +7,12 @@ local instructionsls = localRequire("lib/instructionsls")
 
 local readU32, readSInt = streamutils.readU32, streamutils.readSInt
 local readCatches = codeparser.readCatches
-local readBlockType, readFuncIdx, readMemIdx, readGlobalIdx, readTagIdx, readDataIdx, readLocalIdx, readLabelIdx
- = valparser.readBlockType, valparser.readFuncIdx, valparser.readMemIdx, valparser.readGlobalIdx,
-  valparser.readTagIdx, valparser.readDataIdx, valparser.readLocalIdx, valparser.readLabelIdx
+local readBlockType, readTypeIdx, readFuncIdx, readMemIdx, readGlobalIdx, readTableIdx,
+  readTagIdx, readDataIdx, readLocalIdx, readLabelIdx
+  = valparser.readBlockType, valparser.readTypeIdx, valparser.readFuncIdx, valparser.readMemIdx, valparser.readGlobalIdx,
+  valparser.readTableIdx, valparser.readTagIdx, valparser.readDataIdx, valparser.readLocalIdx, valparser.readLabelIdx
 local load32, load64, store32, store64, loadF32, storeF32, loadF64, storeF64
- = instructionsls.load32, instructionsls.load64, instructionsls.store32, instructionsls.store64,
+  = instructionsls.load32, instructionsls.load64, instructionsls.store32, instructionsls.store64,
   instructionsls.loadF32, instructionsls.storeF32, instructionsls.loadF64, instructionsls.storeF64
 
 local NO_JUMP_POS = "No recorded jump pos"
@@ -23,21 +24,6 @@ local SYMBOL_THROW = {}
 local I33 = 0x100000000
 
 local instr = {}
-
-local function writeInt(tbl, pos, bits, value)
-  for i=1, bits / 7 do
-    if value >= 128 then
-      tbl[pos + i - 1] = value % 128
-      -- TODO: Use // if newer Lua
-      value = math.floor(value / 128)
-    else
-      tbl[pos + i - 1] = value
-      return pos + i
-    end
-  end
-
-  return false, "Int too large to fit in bits"
-end
 
 local function unop(op, f1, f2)
   if op == nil then error("A") end
@@ -219,6 +205,33 @@ instr.drop.collectArgs = function()
   return true
 end
 
+instr.select = {}
+instr.select.evaluate = function(_, context)
+  local stack = context.stack
+  local c, err = stack.popI32()
+  if not c then return nil, err end
+  local v2, err = stack.popLocal()
+  if not v2 then return nil, err end
+  local v1, err = stack.popLocal()
+  if not v1 then return nil, err end
+  if c ~= 0 then
+    stack.pushLocal(v1)
+  else
+    stack.pushLocal(v2)
+  end
+
+  return true
+end
+instr.select.collectArgs = function()
+  return true
+end
+
+instr.select_t = {}
+instr.select_t.evaluate = instr.select.evaluate
+instr.select_t.collectArgs = function(stream)
+  return codeparser.readValTypeList(stream)
+end
+
 instr.block = {}
 instr.block.evaluate = function(stream, context, blockType1, blockType2)
   if not blockType1 then return nil, blockType2 end
@@ -236,7 +249,7 @@ instr.loop.evaluate = function(stream, context, blockType1, blockType2)
   if not blockType1 then return nil, blockType2 end
   local startPos = stream:pos()
   while true do
-    local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2)
+    local ok, err = context.evaluateBlock(stream, context, blockType1, blockType2, false, true)
     if not ok then return nil, err end
     if err == false then return true end
     stream:seek(startPos)
@@ -357,6 +370,41 @@ instr.call.collectArgs = function(stream)
   return readFuncIdx(stream)
 end
 
+instr.call_indirect = {}
+instr.call_indirect.evaluate = function(stream, context, typeidx, tableidx)
+  -- TODO: Call local copy of instructions
+  if not typeidx then return nil, tableidx end
+  local ok, err = instr.table.get.evaluate(stream, context, tableidx)
+  if not ok then return nil, err end
+  -- TODO: Do the cast and stuff
+  return instr.call_ref.evaluate(stream, context, typeidx)
+end
+instr.call_indirect.collectArgs = function(stream)
+  local typeIdx, err = readTypeIdx(stream)
+  if not typeIdx then return nil, err end
+  local tableIdx, err = readTableIdx(stream)
+  if not tableIdx then return nil, err end
+  return typeIdx, tableIdx
+end
+
+instr.call_ref = {}
+instr.call_ref.evaluate = function(stream, context, typeidx, err)
+  -- TODO: Properly handle types
+  if not typeidx then return nil, err end
+  local ref, err = context.stack.popLocal()
+  if not ref then return nil, err end
+  if ref.type == types.RTYPE_NULL then
+    return nil, "Null reference"
+  end
+  if ref.type ~= types.RTYPE_FUNC then
+    return nil, "Expected function reference"
+  end
+  return instr.call.evaluate(stream, context, ref.value)
+end
+instr.call_ref.collectArgs = function(stream)
+  return readTypeIdx(stream)
+end
+
 -- TODO: This almost certainly isn't proper
 local function handleException(context, catches)
   local stack = context.stack
@@ -426,9 +474,8 @@ instr["local"].set = {}
 instr["local"].set.evaluate = function(_, context, localIdx, err)
   if not localIdx then return nil, err end
   local stack = context.stack
-  local loc, err = stack.toLocal()
+  local loc, err = stack.popLocal()
   if not loc then return nil, err end
-  stack.drop()
   context.frame.locals[localIdx + 1] = loc
   return true
 end
@@ -475,8 +522,7 @@ instr.global.set.evaluate = function(_, context, globalidx, err)
     return nil, "Global is not mutable"
   end
 
-  local newGlobal, err = context.stack.toLocal(global)
-  context.stack.drop()
+  local newGlobal, err = context.stack.popLocal(global)
   if not newGlobal then return nil, err end
 
   if newGlobal.type ~= global.type then
@@ -491,11 +537,36 @@ instr.global.set.collectArgs = function(stream)
   return readGlobalIdx(stream)
 end
 
+instr.table = {}
+instr.table.get = {}
+instr.table.get.evaluate = function(_, context, tableidx, err)
+  if not tableidx then return nil, err end
+  local stack = context.stack
+  local iL, err = stack.popLocal()
+  if not iL then return nil, err end
+  local i = iL.value
+  local tables = context.tables
+  if tableidx >= #tables then
+    return nil, "Table not defined"
+  end
+  local mtbl = tables[tableidx + 1]
+  if i >= #mtbl.refs then
+    return nil, "Invalid table index"
+  end
+  stack.pushLocal(mtbl.refs[i + 1])
+  return true
+end
+instr.table.get.collectArgs = function(stream)
+  return readTableIdx(stream)
+end
+
 instr.ref = {}
 instr.ref.func = {}
-instr.ref.func.write = function(tbl, pos, idx)
-  tbl[pos] = 0xD2
-  return writeInt(tbl, pos + 1, 32, idx)
+instr.ref.func.new = function(funcidx)
+  return {
+    type = types.RTYPE_FUNC,
+    value = funcidx
+  }
 end
 
 instr.i32 = {}
@@ -533,6 +604,7 @@ instr.memory = {}
 instr.memory.init = {}
 instr.memory.init.evaluate = function(_, context, dataidx, memidx)
   if not dataidx then return nil, memidx end
+
   local stack = context.stack
   local len, err = stack.popI32()
   if not len then return nil, err end
@@ -558,6 +630,95 @@ instr.memory.init.collectArgs = function(stream)
   local memidx, err = readMemIdx(stream)
   if not memidx then return nil, err end
   return dataidx, memidx
+end
+
+instr.memory.size = {}
+instr.memory.size.evaluate = function(_, context, memidx, err)
+  if not memidx then return nil, err end
+
+  local memory = context.memories[memidx + 1]
+  context.stack.pushI32(memory.sizePages())
+  return true
+end
+instr.memory.size.collectArgs = function(stream)
+  return readMemIdx(stream)
+end
+
+instr.memory.grow = {}
+instr.memory.grow.evaluate = function(_, context, memidx, err)
+  if not memidx then return nil, err end
+
+  local deltaPages, err = context.stack.popI32()
+  if not deltaPages then return nil, err end
+
+  local memory = context.memories[memidx + 1]
+  local oldPages = memory.growPages(deltaPages, memory.maxPages)
+  context.stack.pushI32(oldPages)
+  return true
+end
+instr.memory.collectArgs = function(stream)
+  return readMemIdx(stream)
+end
+
+instr.memory.copy = {}
+instr.memory.copy.evaluate = function(_, context, destMemIdx, srcMemIdx)
+  if not destMemIdx then return nil, srcMemIdx end
+
+  local len, err = context.stack.popI32()
+  if not len then return nil, err end
+  local srcOffset, err = context.stack.popI32()
+  if not srcOffset then return nil, err end
+  local destOffset, err = context.stack.popI32()
+  if not destOffset then return nil, err end
+
+  local destMem = context.memories[destMemIdx + 1]
+  local srcMem = context.memories[srcMemIdx + 1]
+
+  local ok, err = destMem.copyMemBytes(srcMem, srcOffset, destOffset, len)
+  if not ok then return nil, err end
+  return true
+end
+instr.memory.copy.collectArgs = function(stream)
+  local destMemIdx, err = readMemIdx(stream)
+  if not destMemIdx then return nil, err end
+  local srcMemIdx, err = readMemIdx(stream)
+  if not srcMemIdx then return nil, err end
+  return destMemIdx, srcMemIdx
+end
+
+instr.memory.fill = {}
+instr.memory.fill.evaluate = function(_, context, memidx, err)
+  if not memidx then return nil, err end
+
+  local len, err = context.stack.popI32()
+  if not len then return nil, err end
+  local val, err = context.stack.popI32()
+  if not val then return nil, err end
+  local destOffset, err = context.stack.popI32()
+  if not destOffset then return nil, err end
+
+  local memory = context.memories[memidx + 1]
+  local ok, err = memory.fillMemBytes(destOffset, val, len)
+  if not ok then return nil, err end
+  return true
+end
+instr.memory.fill.collectArgs = function(stream)
+  return readMemIdx(stream)
+end
+
+instr.data = {}
+instr.data.drop = {}
+instr.data.drop.evaluate = function(_, context, dataidx, err)
+  if not dataidx then return nil, err end
+  local dataSegment = context.data[dataidx + 1]
+  if dataSegment then
+    dataSegment.data = {}
+    dataSegment.datalen = 0
+  end
+  return true
+end
+instr.data.drop.collectArgs = function(stream)
+  return readDataIdx(stream)
 end
 
 instr.i32.const = {}
@@ -783,7 +944,9 @@ local fcSubOps = {
   [5] = instr.i64.trunc_sat_f32_u,
   [6] = instr.i64.trunc_sat_f64_s,
   [7] = instr.i64.trunc_sat_f64_u,
-  [8] = instr.memory.init
+  [8] = instr.memory.init,
+  [10] = instr.memory.copy,
+  [11] = instr.memory.fill
 }
 
 instr._lookup = {
@@ -800,13 +963,18 @@ instr._lookup = {
   [0x0D] = instr.br_if,
   [0x0F] = instr["return"],
   [0x10] = instr.call,
+  [0x11] = instr.call_indirect,
+  [0x14] = instr.call_ref,
   [0x1A] = instr.drop,
+  [0x1B] = instr.select,
+  [0x1C] = instr.select_t,
   [0x1F] = instr.try_table,
   [0x20] = instr["local"].get,
   [0x21] = instr["local"].set,
   [0x22] = instr["local"].tee,
   [0x23] = instr.global.get,
   [0x24] = instr.global.set,
+  [0x25] = instr.table.get,
   [0x28] = instr.i32.load,
   [0x29] = instr.i64.load,
   [0x2A] = instr.f32.load,
@@ -830,6 +998,8 @@ instr._lookup = {
   [0x3C] = instr.i64.store8,
   [0x3D] = instr.i64.store16,
   [0x3E] = instr.i64.store32,
+  [0x3F] = instr.memory.size,
+  [0x40] = instr.memory.grow,
   [0x41] = instr.i32.const,
   [0x42] = instr.i64.const,
   [0x43] = instr.f32.const,

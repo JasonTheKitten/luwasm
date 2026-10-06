@@ -79,6 +79,9 @@ local function create()
   end
 
   function handle.drop()
+    if #typeStack == 0 then
+      return nil, STACK_EMPTY
+    end
     if handle.isType(types.VTYPE_I64) then
       table.remove(stack)
       table.remove(stack)
@@ -86,6 +89,7 @@ local function create()
       table.remove(stack)
     end
     table.remove(typeStack)
+    return true
   end
 
   function handle.toLocal()
@@ -104,6 +108,14 @@ local function create()
       value = value,
       value2 = value2
     }
+  end
+
+  function handle.popLocal()
+    local loc, err = handle.toLocal()
+    if not loc then return nil, err end
+    local ok, err = handle.drop()
+    if not ok then return err end
+    return loc
   end
 
   function handle.pushLocal(loc)
@@ -156,6 +168,8 @@ local function create()
     return true
   end
 
+  ---@diagnostic disable-next-line: deprecated
+  local unpack = unpack or table.unpack
   function handle.unpack(startTypeIdx)
     startTypeIdx = startTypeIdx or 1
     local rawStart = 1
@@ -167,7 +181,7 @@ local function create()
         rawStart = rawStart + 1
       end
     end
-    return table.unpack(stack, rawStart)
+    return unpack(stack, rawStart)
   end
 
   function handle.pushTypedValues(args, vtypes)

@@ -2,12 +2,13 @@ local bits = localRequire("lib/bits")
 
 local PAGE_SIZE = 65536
 local MEM_OOB = "Memory access out-of-bounds"
+local MAX_PAGES = 65536
 
 local function createBackedU32Memory(backingArr, u8Size)
   local memory = {
     u8Size = u8Size
   }
-  
+
   function memory.u8(idx)
     if idx < 0 or idx >= u8Size then
       return nil, MEM_OOB
@@ -29,7 +30,7 @@ local function createBackedU32Memory(backingArr, u8Size)
     local shift = refIndex * 8
 
     local currentWord = backingArr[wordIdx] or 0
-    local mask = bits.bnot(bits.shl(0xFF, shift))
+    local mask = bits.bnot32(bits.shl(0xFF, shift))
     local cleared = bits.band(currentWord, mask)
     local shiftedVal = bits.shl(bits.band(val, 0xFF), shift)
 
@@ -91,9 +92,76 @@ local function createBackedU32Memory(backingArr, u8Size)
 
   function memory.writeU64(pos, lval, hval)
     local ok, err = memory.writeU32(pos, lval)
-    if not ok then return err end
-    local ok, err = memory.writeU32(pos + 4, hval)
-    if not ok then return err end
+    if not ok then return nil, err end
+    local ok, err = memory.writeU32(pos + 4, hval or 0)
+    if not ok then return nil, err end
+    return true
+  end
+
+  function memory.fillMemBytes(destpos, val, len)
+    if len < 0 or destpos < 0 or destpos + len > u8Size then
+      return nil, MEM_OOB
+    end
+
+    local b = bits.band(val, 0xFF)
+    local val32 = b + bits.shl(b, 8) + bits.shl(b, 16) + bits.shl(b, 24)
+
+    local i = 0
+    while i < len and (destpos + i) % 4 ~= 0 do
+      memory.writeU8(destpos + i, b)
+      i = i + 1
+    end
+
+    while len - i >= 4 do
+      memory.writeU32(destpos + i, val32)
+      i = i + 4
+    end
+
+    while i < len do
+      memory.writeU8(destpos + i, b)
+      i = i + 1
+    end
+    return true
+  end
+
+  function memory.copyMemBytes(srcMem, srcpos, destpos, len)
+    local srcSize = srcMem.u8Size
+    if
+      len < 0
+      or srcpos < 0 or srcpos + len > srcSize
+      or destpos < 0 or destpos + len > u8Size
+    then
+      return nil, MEM_OOB
+    end
+
+    if srcMem == memory and destpos > srcpos then
+      local i = len - 1
+      while i >= 0 do
+        local byteVal, err = srcMem.u8(srcpos + i)
+        if byteVal == nil then return nil, err end
+        memory.writeU8(destpos + i, byteVal)
+        i = i - 1
+      end
+    else
+      local i = 0
+      while i < len do
+        local currSrc = srcpos + i
+        local currDest = destpos + i
+        local rem = len - i
+
+        if rem >= 4 and currSrc % 4 == 0 and currDest % 4 == 0 then
+          local val32, err = srcMem.u32(currSrc)
+          if val32 == nil then return nil, err end
+          memory.writeU32(currDest, val32)
+          i = i + 4
+        else
+          local byteVal, err = srcMem.u8(currSrc)
+          if byteVal == nil then return nil, err end
+          memory.writeU8(currDest, byteVal)
+          i = i + 1
+        end
+      end
+    end
     return true
   end
 
@@ -142,63 +210,30 @@ local function createBackedU32Memory(backingArr, u8Size)
     return true
   end
 
-  function memory.copyMemBytes(srcMem, srcpos, destpos, len)
-    local srcSize = srcMem.u8Size
-    if
-      len < 0
-      or srcpos < 0 or (srcSize and srcpos + len > srcSize)
-      or destpos < 0 or destpos + len > u8Size then
-      return nil, MEM_OOB
-    end
-
-    local i = 0
-    while i < len do
-      local currSrc = srcpos + i
-      local currDest = destpos + i
-      local rem = len - i
-
-      if rem >= 4 then
-        local val, err = srcMem.u32(currSrc)
-        if val == false then return nil, err end
-        memory.writeU32(currDest, val)
-        i = i + 4
-      else
-        local val, err = srcMem.u8(currSrc)
-        if val == false then return nil, err end
-        memory.writeU8(currDest, val)
-        i = i + 1
-      end
-    end
-    return true
+  function memory.sizePages()
+    return math.floor(u8Size / PAGE_SIZE)
   end
 
-  function memory.writeStringBytes(srcStr, srcpos, destpos, len)
-    if
-      len < 0
-      or srcpos < 1 or (srcpos - 1) + len > #srcStr
-      or destpos < 0 or destpos + len > u8Size
-    then
-      return nil, MEM_OOB
+  function memory.growPages(deltaPages, maxPages)
+    local oldPages = math.floor(u8Size / PAGE_SIZE)
+    if deltaPages == 0 then return oldPages end
+
+    local newPages = oldPages + deltaPages
+    local cap = maxPages or MAX_PAGES
+    if newPages > cap or newPages > MAX_PAGES then
+      return -1
     end
 
-    local i = 0
-    while i < len do
-      local currSrc = srcpos + i
-      local currDest = destpos + i
-      local rem = len - i
+    local newU8Size = newPages * PAGE_SIZE
+    local newU32Size = math.ceil(newU8Size / 4)
 
-      if rem >= 4 then
-        local b0, b1, b2, b3 = string.byte(srcStr, currSrc, currSrc + 3)
-        local val = (b0 or 0) + bits.shl(b1 or 0, 8) + bits.shl(b2 or 0, 16) + bits.shl(b3 or 0, 24)
-        memory.writeU32(currDest, val)
-        i = i + 4
-      else
-        local b = string.byte(srcStr, currSrc) or 0
-        memory.writeU8(currDest, b)
-        i = i + 1
-      end
+    for i = #backingArr + 1, newU32Size do
+      backingArr[i] = 0
     end
-    return true
+
+    u8Size = newU8Size
+    memory.u8Size = u8Size
+    return oldPages
   end
 
   return memory
