@@ -47,13 +47,13 @@ local function createVM(module, imports)
     end
   end
 
-  local types = {}
+  local ftypes = {}
   local typesList = module.typeSection and module.typeSection.types or {}
   for _, v in ipairs(typesList) do
     for _, v2 in ipairs(v.types) do
       for _, v3 in ipairs(v2) do
         if v3.type == RTYPE_FUNC then
-          table.insert(types, { numArgs = #v3.params, params = v3.params, rtn = v3.rtn })
+          table.insert(ftypes, { numArgs = #v3.params, params = v3.params, rtn = v3.rtn })
         end
       end
     end
@@ -102,7 +102,7 @@ local function createVM(module, imports)
   local tags = {}
   local tagList = module.tagSection and module.tagSection.tags or {}
   for k, v in ipairs(tagList) do
-    local type = types[v.typeidx + 1]
+    local type = ftypes[v.typeidx + 1]
     if not type then
       return nil, "Type not defined"
     end
@@ -112,14 +112,46 @@ local function createVM(module, imports)
   end
 
   local codesList = module.codeSection and module.codeSection.codes or {}
+  
+  local function convertImportValue(v, vtype)
+    if type(v) == "boolean" then
+      if vtype == types.VTYPE_I32 or
+        vtype == types.VTYPE_I64 or
+        vtype == types.VTYPE_F32 or
+        vtype == types.VTYPE_F64 then
+        local result = v and 1 or 0
+        return result
+      end
+    end
+
+    return v
+  end
+
+  local function convertImportResults(rtn, rtnTypes)
+    local result = {}
+    local rawIdx = 1
+
+    for _, rtnType in ipairs(rtnTypes) do
+      if rtnType == types.VTYPE_I64 then
+        result[rawIdx] = convertImportValue(rtn[rawIdx], rtnType)
+        result[rawIdx + 1] = convertImportValue(rtn[rawIdx + 1], rtnType)
+        rawIdx = rawIdx + 2
+      else
+        result[rawIdx] = convertImportValue(rtn[rawIdx], rtnType)
+        rawIdx = rawIdx + 1
+      end
+    end
+
+    return result
+  end
 
   local functions = {}
   local importTypes = {}
   imports = imports or {}
   local importsList = module.importSection and module.importSection.imports or {}
   for k, v in ipairs(importsList) do
-    local type = types[v.externType.idx + 1]
-    if not type then
+    local ftype = ftypes[v.externType.idx + 1]
+    if not ftype then
       return nil, "Type not defined"
     end
     local module = imports[v.moduleName]
@@ -135,29 +167,33 @@ local function createVM(module, imports)
       return pcall(func, ...)
     end
     functions[k] = function(context)
+      -- print(v.itemName)
       local stack = context.stack
-      local args, err = stack.popTypedValues(type.params)
+      local args, err = stack.popTypedValues(ftype.params)
       if not args then return err end
       ---@diagnostic disable-next-line: redundant-parameter
       local rtn = { innerFunc(unpack(args)) }
       rtn[1] = rtn[1] or false
       local ok = table.remove(rtn, 1)
       if not ok then return nil, rtn[1] end
-      stack.pushTypedValues(rtn, type.rtn)
+      if dopc then
+        rtn = convertImportResults(rtn, ftype.rtn)
+      end
+      stack.pushTypedValues(rtn, ftype.rtn)
       return true
     end
   end
 
   local functionsData = {}
   local function runInterpretedFunction(idx, context)
-    -- print("Run", idx + #importsList - 1)
+    --print("Run", idx + #importsList - 1)
     local functionData = functionsData[idx]
     if functionData.reader == nil then
       local code = codesList[idx]
       local memory = memoryLib.createBackedU32Memory(code.code, code.codelen)
       functionData.reader = memoryLib.createMemoryReader(memory)
 
-      local type = types[module.funcSection.funcs[idx] + 1]
+      local type = ftypes[module.funcSection.funcs[idx] + 1]
       if not type then
         return nil, "Type does not exist"
       end
@@ -169,6 +205,7 @@ local function createVM(module, imports)
       functionData.jumpMap = jumpMap
       functionData.sourceMap = sourceMap
     end
+
     local functionReader = functionData.reader
     -- Needed to avoid recursion from destroying the position
     local oldPos = functionReader:pos()
@@ -177,6 +214,8 @@ local function createVM(module, imports)
     local ok, frameIndex = codeLib.evaluateFunc(
       functionReader, context, functionData)
     functionReader:seek(oldPos)
+
+    --print("Exit", idx + #importsList - 1)
     
     if not ok then return nil, frameIndex end
     
@@ -195,7 +234,7 @@ local function createVM(module, imports)
     if funcIdx >= #importsList then
       local codeIdx = funcIdx - #importsList + 1
       local typeIdx = module.funcSection.funcs[codeIdx]
-      return types[typeIdx + 1]
+      return ftypes[typeIdx + 1]
     else
       return importTypes[funcIdx]
     end
@@ -227,7 +266,7 @@ local function createVM(module, imports)
         context.globals = globals
         context.tags = tags
         context.functions = functions
-        context.types = types
+        context.types = ftypes
 
         local ok, frameIndex = functions[v.type.idx + 1](context)
         local err = frameIndex

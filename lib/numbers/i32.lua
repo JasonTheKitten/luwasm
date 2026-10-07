@@ -35,7 +35,7 @@ end
 local numbersI32 = {}
 
 numbersI32.eqz = function(a)
-  return (a % U32_MASK) == 0
+  return a == 0
 end
 
 numbersI32.eq = function(a, b)

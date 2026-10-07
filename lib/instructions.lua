@@ -675,7 +675,7 @@ instr.memory.grow.evaluate = function(_, context, memidx, err)
   context.stack.pushI32(oldPages)
   return true
 end
-instr.memory.collectArgs = function(stream)
+instr.memory.grow.collectArgs = function(stream)
   return readMemIdx(stream)
 end
 
@@ -763,7 +763,7 @@ instr.i32.le_u = relopI32(numbers.i32.le_u)
 instr.i32.ge_s = relopI32(numbers.i32.ge_s)
 instr.i32.ge_u = relopI32(numbers.i32.ge_u)
 
-instr.i32.clz = unopI32(numbers.i32.ctz)
+instr.i32.clz = unopI32(numbers.i32.clz)
 instr.i32.ctz = unopI32(numbers.i32.ctz)
 instr.i32.popcnt = unopI32(numbers.i32.popcnt)
 
@@ -1154,6 +1154,25 @@ instr._lookup = {
   [0xC3] = instr.i64.extend16_s,
   [0xC4] = instr.i64.extend32_s,
 }
+
+local function assignDebugNames(tbl, prefix, visited)
+  visited = visited or {}
+  if type(tbl) ~= "table" or visited[tbl] then return end
+  visited[tbl] = true
+
+  for key, child in pairs(tbl) do
+    if type(child) == "table" and key ~= "_lookup" then
+      local name = (prefix and prefix ~= "") 
+        and (prefix .. "." .. tostring(key)) 
+        or tostring(key)
+
+      child.debugName = name
+      assignDebugNames(child, name, visited)
+    end
+  end
+end
+
+assignDebugNames(instr)
 
 instr.SYMBOL_BR = SYMBOL_BR
 instr.SYMBOL_RETURN = SYMBOL_RETURN

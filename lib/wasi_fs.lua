@@ -6,10 +6,10 @@ local filesystem = driver.filesystem
 local U32_MAX = 0xFFFFFFFF
 
 local ERR_EIO = 5
-local ERR_ENOENT = 8
+local ERR_ENOENT = 44
 local ERR_EEXIST = 17
 local ERR_ENOTDIR = 20
-local ERR_ENOSYS = 38
+local ERR_ENOSYS = 52
 
 local WASI_FILETYPE_CHARACTER_DEVICE = 2
 local WASI_FILETYPE_DIRECTORY = 3
@@ -68,13 +68,31 @@ function wasiFS.relPath(path)
 end
 
 function wasiFS.realFile(filePath, ops)
-  local mode = ops.truncate and "wb" or "ab"
-  local ioHandle, err = io.open(filePath, mode)
+  local mode
+  if ops.write then
+    if ops.truncate then
+      mode = ops.read and "w+b" or "wb"
+    else
+      mode = ops.read and "a+b" or "ab"
+    end
+  else
+    mode = "rb"
+  end
+
+  local ioHandle = io.open(filePath, mode)
   if not ioHandle then return nil, ERR_EIO end
 
   local handle = {
     type = WASI_FILETYPE_REGULAR_FILE
   }
+
+  function handle.read(count)
+    local data, err = ioHandle:read(count)
+    if not data then
+      return nil, err or ERR_EIO
+    end
+    return data
+  end
 
   function handle.write(str)
     local ok = ioHandle:write(str)
@@ -82,8 +100,20 @@ function wasiFS.realFile(filePath, ops)
     return #str
   end
 
+  function handle.seek(offset, whence)
+    local pos, err = ioHandle:seek(whence, offset)
+    if not pos then
+      return nil, err
+    end
+    return pos
+  end
+
   function handle.close()
     ioHandle:close()
+  end
+
+  function handle.attributes()
+    return filesystem.attributes(filePath)
   end
 
   return handle
@@ -142,6 +172,10 @@ function wasiFS.realDir(dirPath)
 
   function handle.close()
 
+  end
+
+  function handle.attributes()
+    return filesystem.attributes(dirPath)
   end
 
   return handle

@@ -22,6 +22,7 @@ local function lookupInstr(stream)
       return nil, "Unsupported sub-instruction: " .. subopcode
     end
   end
+  -- print(instr.debugName)
   return instr
 end
 
@@ -179,6 +180,7 @@ local function generateJumpMap(stream)
 
     local instr, err = lookupInstr(stream)
     if not instr then return nil, err end
+    if not instr.collectArgs then print(instr.debugName) end
     instr.collectArgs(stream)
 
     if instr.blockEnds ~= nil then

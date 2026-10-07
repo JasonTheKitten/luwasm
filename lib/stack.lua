@@ -2,6 +2,8 @@ local types = localRequire("lib/types")
 
 local STACK_EMPTY = "Stack is empty"
 
+local DEBUG_VALIDATE = true
+
 local function create()
   local stack = {}
   -- TODO: How does the parallel type stack affect memory?
@@ -20,25 +22,65 @@ local function create()
   end
 
   function handle.pushI32(v)
-    table.insert(stack, v)
-    table.insert(typeStack, types.VTYPE_I32)
+  if DEBUG_VALIDATE and type(v) ~= "number" then
+    error(
+      "pushI32 received " .. type(v) ..
+      " (" .. tostring(v) .. ")",
+      2
+    )
   end
 
-  function handle.pushI64(lv, hv)
-    table.insert(stack, lv)
-    table.insert(stack, hv)
-    table.insert(typeStack, types.VTYPE_I64)
+  table.insert(stack, v)
+  table.insert(typeStack, types.VTYPE_I32)
+end
+
+function handle.pushI64(lv, hv)
+  if DEBUG_VALIDATE and type(lv) ~= "number" then
+    error(
+      "pushI64 low received " .. type(lv) ..
+      " (" .. tostring(lv) .. ")",
+      2
+    )
   end
 
-  function handle.pushF32(v)
-    table.insert(stack, v)
-    table.insert(typeStack, types.VTYPE_F32)
+  if DEBUG_VALIDATE and type(hv) ~= "number" then
+    error(
+      "pushI64 high received " .. type(hv) ..
+      " (" .. tostring(hv) .. ")",
+      2
+    )
   end
 
-  function handle.pushF64(v)
-    table.insert(stack, v)
-    table.insert(typeStack, types.VTYPE_F64)
+  table.insert(stack, lv)
+  table.insert(stack, hv)
+  table.insert(typeStack, types.VTYPE_I64)
+end
+
+function handle.pushF32(v)
+  if DEBUG_VALIDATE and type(v) ~= "number" then
+    error(
+      "pushF32 received " .. type(v) ..
+      " (" .. tostring(v) .. ")",
+      2
+    )
   end
+
+  table.insert(stack, v)
+  table.insert(typeStack, types.VTYPE_F32)
+end
+
+function handle.pushF64(v)
+  if DEBUG_VALIDATE and type(v) ~= "number" then
+    error(
+      "pushF64 received " .. type(v) ..
+      " (" .. tostring(v) .. ")",
+      2
+    )
+  end
+
+  table.insert(stack, v)
+  table.insert(typeStack, types.VTYPE_F64)
+end
 
   function handle.pushExn(v)
     table.insert(stack, v)
@@ -125,8 +167,40 @@ local function create()
     table.insert(stack, loc.value)
     table.insert(typeStack, loc.type)
   end
-
+  
   function handle.pushTyped(vtype, val1, val2)
+    if DEBUG_VALIDATE then
+      if vtype == types.VTYPE_I64 then
+        if type(val1) ~= "number" then
+          error(
+            "pushTyped i64 low received " ..
+            type(val1) .. " (" .. tostring(val1) .. ")",
+            2
+          )
+        end
+
+        if type(val2) ~= "number" then
+          error(
+            "pushTyped i64 high received " ..
+            type(val2) .. " (" .. tostring(val2) .. ")",
+            2
+          )
+        end
+      elseif vtype == types.VTYPE_I32 or
+            vtype == types.VTYPE_F32 or
+            vtype == types.VTYPE_F64 then
+
+        if type(val1) ~= "number" then
+          error(
+            "pushTyped " .. tostring(vtype) ..
+            " received " .. type(val1) ..
+            " (" .. tostring(val1) .. ")",
+            2
+          )
+        end
+      end
+    end
+
     if vtype == types.VTYPE_I64 then
       table.insert(stack, val1)
       table.insert(stack, val2)

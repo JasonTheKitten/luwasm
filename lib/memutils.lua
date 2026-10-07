@@ -3,8 +3,21 @@ local function readLenString(memory, ptr, len)
   for i = 0, len - 1 do
     local b, err = memory.u8(ptr + i)
     if not b then return nil, err end
+    --if b == 0 then break end
+    table.insert(bytes, string.char(b))
+  end
+  return table.concat(bytes)
+end
+
+local function readCString(memory, ptr)
+  local bytes = {}
+  local i = 0
+  while true do
+    local b, err = memory.u8(ptr + i)
+    if not b then return nil, err end
     if b == 0 then break end
     table.insert(bytes, string.char(b))
+    i = i + 1
   end
   return table.concat(bytes)
 end
@@ -15,10 +28,9 @@ local function writeString(memory, ptr, val)
     ok, err = memory.writeU8(ptr + i - 1, val:byte(i))
     if not ok then return nil, err end
   end
-  ok, err = memory.writeU8(ptr + #val, 0)
   if not ok then return nil, err end
 
-  return #val + 1
+  return #val
 end
 
 local function newStructWriter(memory, pos)
@@ -82,6 +94,7 @@ end
 
 return {
   readLenString = readLenString,
+  readCString = readCString,
   writeString = writeString,
   newStructWriter = newStructWriter
 }

@@ -54,6 +54,7 @@ local function createBackedU32Memory(backingArr, u8Size)
 
   function memory.u32(idx)
     if idx < 0 or idx + 3 >= u8Size then
+      print("OOB", string.format("0x%02X", idx))
       return nil, MEM_OOB
     end
 
@@ -70,6 +71,7 @@ local function createBackedU32Memory(backingArr, u8Size)
 
   function memory.writeU32(pos, val)
     if pos < 0 or pos + 3 >= u8Size then
+      print("OOB", string.format("0x%02X", pos))
       return nil, MEM_OOB
     end
 
@@ -210,6 +212,10 @@ local function createBackedU32Memory(backingArr, u8Size)
     return true
   end
 
+  function memory.raw()
+    return backingArr
+  end
+
   function memory.sizeBytes()
     return math.floor(u8Size)
   end
@@ -261,7 +267,6 @@ local function createMemoryReader(memory)
 
   function reader:read(n)
     assert(n == 1)
-    -- TODO: Avoid the char and back conversion
     local b, err = memory.u8(pos)
     if not b then return nil, err end
     local val = string.char(b)

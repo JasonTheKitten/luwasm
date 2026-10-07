@@ -87,6 +87,58 @@ driver.filesystem.isDir = function(path)
   return lfs.attributes(path, "mode") == "directory"
 end
 
+local function lfsModeToWasiType(mode)
+  if mode == "file" then
+    return 4
+  elseif mode == "directory" then
+    return 3
+  elseif mode == "link" then
+    return 7
+  elseif mode == "char device" then
+    return 2
+  elseif mode == "block device" then
+    return 1
+  end
+  return 0
+end
+local function getNanoTime(path)
+  local statPHandle = io.popen("stat " .. path)
+  if not statPHandle then return end
+  local statOutput = statPHandle:read("*a")
+  statPHandle:close()
+
+  local ctimeNs = statOutput:match("Change: ([^\n]+)\n")
+  if ctimeNs then
+    ctimeNs = tonumber(ctimeNs:match("%.(%d+) "))
+  end
+
+  local mtimeNs = statOutput:match("Modify: ([^\n]+)\n")
+  if mtimeNs then
+    mtimeNs = tonumber(mtimeNs:match("%.(%d+) "))
+  end
+
+  return ctimeNs, mtimeNs
+end
+driver.filesystem.attributes = function(path)
+  local rawAttributes = lfs.attributes(path)
+  if not rawAttributes then return nil, "File not found" end
+
+  local ctimeNanos, mtimeNanos = getNanoTime(path)
+
+  return {
+    mode = lfsModeToWasiType(rawAttributes.mode),
+    size = rawAttributes.size,
+    dev = rawAttributes.dev,
+    ino = rawAttributes.ino,
+    nlink = rawAttributes.nlink or 1,
+    ctime = rawAttributes.change,
+    ctimeNanos = ctimeNanos,
+    mtime = rawAttributes.modification,
+    mtimeNanos = mtimeNanos,
+    atime = rawAttributes.access or rawAttributes.modification,
+    atimeNanos = 0,
+  }
+end
 driver.filesystem.rm = function(path, recursive)
   if recursive and driver.filesystem.isDir(path) then
     for file in lfs.dir(path) do
