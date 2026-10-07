@@ -200,6 +200,51 @@ local function create()
     end
   end
 
+  function handle.popTypedValues(vtypes)
+    local numTypes = #vtypes
+    local typeCount = #typeStack
+
+    if typeCount < numTypes then
+      return nil, STACK_EMPTY
+    end
+
+    local totalRaw = 0
+    local typeStart = typeCount - numTypes
+    for i = 1, numTypes do
+      local expectedType = vtypes[i]
+      if typeStack[typeStart + i] ~= expectedType then
+        return nil, "Type Mismatch (Expected " .. tostring(expectedType) .. ")"
+      end
+
+      if expectedType == types.VTYPE_I64 then
+        totalRaw = totalRaw + 2
+      else
+        totalRaw = totalRaw + 1
+      end
+    end
+
+    local stackCount = #stack
+    if stackCount < totalRaw then
+      return nil, STACK_EMPTY
+    end
+
+    local args = {}
+    local stackStart = stackCount - totalRaw
+    for i = 1, totalRaw do
+      args[i] = stack[stackStart + i]
+    end
+
+    for i = stackCount, stackStart + 1, -1 do
+      stack[i] = nil
+    end
+
+    for i = typeCount, typeStart + 1, -1 do
+      typeStack[i] = nil
+    end
+
+    return args
+  end
+
   function handle.size()
     return #typeStack
   end

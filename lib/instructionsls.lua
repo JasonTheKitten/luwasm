@@ -15,7 +15,8 @@ local function load32(size, signed)
     local i, err = stack.popI32()
     if not i then return nil, err end
 
-    local val = memory[size](i + pos)
+    local val, err = memory[size](i + pos)
+    if not val then return nil, err end
 
     if signed then
       if size == "u8" and val >= 0x80 then

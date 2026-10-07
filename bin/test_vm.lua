@@ -61,8 +61,27 @@ local module, err = moduleParser.readModule(testModuleHandle)
 testModuleHandle:close()
 if not module then error(err) end
 
-local vmCreator = localRequire("lib/vm")
-local vm = assert(vmCreator.createVM(module))
--- print(assert(vm.exports[args[2]]()))
-print(assert(vm.exports.__wasm_call_ctors()))
-print(assert(vm.exports.init_game()))
+local wasiLib = localRequire("lib/wasi")
+local wasiFS = localRequire("lib/wasi_fs")
+
+local env = {}
+local fds = {
+  wasiFS.createFile(wasiFS.bytesFile({})),
+  wasiFS.createFile(wasiFS.logFile(function(msg)
+    print("[STDOUT] " .. msg)
+  end)),
+  wasiFS.createFile(wasiFS.logFile(function(msg)
+    print("[STDERR] " .. msg)
+  end)),
+  wasiFS.createPreOpenDirectory(".", wasiFS.realDir(wasiFS.relPath("../data")))
+}
+local wasi = wasiLib.create(env, fds)
+
+local VM = localRequire("lib/vm")
+local vm = assert(VM.createVM(module, {
+  wasi_snapshot_preview1 = wasi.imports,
+  env = {}
+}))
+wasi.initialize(vm)
+
+print(assert(vm.exports[args[2]]()))

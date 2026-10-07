@@ -5,6 +5,7 @@ local stackLib = localRequire("lib/stack")
 local instructions = localRequire("lib/instructions")
 
 local RTYPE_FUNC, COMP_TYPE_MEM = types.RTYPE_FUNC, types.COMP_TYPE_MEM
+local EXIT_SYMBOL = {}
 
 local function evaluateConstantExpr(expr)
   local memory = memoryLib.createBackedU32Memory(expr.data, expr.len)
@@ -13,7 +14,19 @@ local function evaluateConstantExpr(expr)
   return codeLib.evaluateConstExpr(reader, context)
 end
 
-local function createVM(module)
+---@diagnostic disable-next-line: deprecated
+local unpack = unpack or table.unpack
+
+local function exit(x)
+  x = x or 0
+  return nil, {
+    symbol = EXIT_SYMBOL,
+    normal = x == 0,
+    val = { x }
+  }
+end
+
+local function createVM(module, imports)
   local memories = {}
   
   local memoriesList = module.memorySection and module.memorySection.memories or {}
@@ -101,16 +114,43 @@ local function createVM(module)
   local codesList = module.codeSection and module.codeSection.codes or {}
 
   local functions = {}
+  local importTypes = {}
+  imports = imports or {}
   local importsList = module.importSection and module.importSection.imports or {}
-  for i=1, #importsList do
-    functions[i] = function()
-      return nil, "Import functions are not yet implemented"
+  for k, v in ipairs(importsList) do
+    local type = types[v.externType.idx + 1]
+    if not type then
+      return nil, "Type not defined"
+    end
+    local module = imports[v.moduleName]
+    if not module then
+      return nil, "No module function has name '"..v.moduleName.."'"
+    end
+    module.___nopcall = module.___nopcall or {}
+    local func = (v.itemName ~= "___nopcall" and module[v.itemName]) or module.___nopcall[v.itemName] or function(...)
+      return nil, "No import function in module '" .. v.moduleName .. "' has name '"..v.itemName.."'"
+    end
+    local dopc = v.itemName ~= "___nopcall" and module[v.itemName] ~= nil
+    local innerFunc = (not dopc and func) or function(...)
+      return pcall(func, ...)
+    end
+    functions[k] = function(context)
+      local stack = context.stack
+      local args, err = stack.popTypedValues(type.params)
+      if not args then return err end
+      ---@diagnostic disable-next-line: redundant-parameter
+      local rtn = { innerFunc(unpack(args)) }
+      rtn[1] = rtn[1] or false
+      local ok = table.remove(rtn, 1)
+      if not ok then return nil, rtn[1] end
+      stack.pushTypedValues(rtn, type.rtn)
+      return true
     end
   end
 
   local functionsData = {}
   local function runInterpretedFunction(idx, context)
-    print("Run", idx + #importsList - 1)
+    -- print("Run", idx + #importsList - 1)
     local functionData = functionsData[idx]
     if functionData.reader == nil then
       local code = codesList[idx]
@@ -157,7 +197,7 @@ local function createVM(module)
       local typeIdx = module.funcSection.funcs[codeIdx]
       return types[typeIdx + 1]
     else
-      return nil, "Import functions not implemented"
+      return importTypes[funcIdx]
     end
   end
 
@@ -198,6 +238,8 @@ local function createVM(module)
             return nil, "Control flow 'return' reached top (not implemented)"
           elseif err.symbol == instructions.SYMBOL_THROW then
             return nil, "Control flow 'throw' reached top (not implemented)"
+          elseif err.symbol == EXIT_SYMBOL then
+            return err.normal, unpack(err.val)
           end
         end
         if not ok then return nil, err end
@@ -210,10 +252,13 @@ local function createVM(module)
   end
 
   return {
-    exports = exports
+    exports = exports,
+    exit = exit
   }
 end
 
 return {
-  createVM = createVM
+  EXIT_SYMBOL = EXIT_SYMBOL,
+  createVM = createVM,
+  exit = exit
 }

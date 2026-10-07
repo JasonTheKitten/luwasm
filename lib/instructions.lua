@@ -5,7 +5,7 @@ local valparser = localRequire("lib/valparser")
 local types = localRequire("lib/types")
 local instructionsls = localRequire("lib/instructionsls")
 
-local readU32, readSInt = streamutils.readU32, streamutils.readSInt
+local readU32, readSInt, readList = streamutils.readU32, streamutils.readSInt, streamutils.readList
 local readCatches = codeparser.readCatches
 local readBlockType, readTypeIdx, readFuncIdx, readMemIdx, readGlobalIdx, readTableIdx,
   readTagIdx, readDataIdx, readLocalIdx, readLabelIdx
@@ -347,6 +347,25 @@ instr.br_if.evaluate = function(_, context, depth, err)
 end
 instr.br_if.collectArgs = function(stream)
   return readLabelIdx(stream)
+end
+
+instr.br_table = {}
+instr.br_table.evaluate = function(_, context, depths, depth)
+  if not depths then return nil, depth end
+  local stack = context.stack
+  local c, err = stack.popI32()
+  if not c then return nil, err end
+  if c < #depths then
+    return nil, { symbol = SYMBOL_BR, depth = depths[c + 1] }
+  end
+  return nil, { symbol = SYMBOL_BR, depth = depth }
+end
+instr.br_table.collectArgs = function(stream)
+  local depths, err = readList(stream, readLabelIdx)
+  if not depths then return nil, err end
+  local depth, err = readLabelIdx(stream)
+  if not depth then return nil, err end
+  return depths, depth
 end
 
 instr["return"] = {}
@@ -961,6 +980,7 @@ instr._lookup = {
   [0x0B] = instr._.block_end,
   [0x0C] = instr.br,
   [0x0D] = instr.br_if,
+  [0x0E] = instr.br_table,
   [0x0F] = instr["return"],
   [0x10] = instr.call,
   [0x11] = instr.call_indirect,

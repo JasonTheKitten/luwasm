@@ -210,6 +210,10 @@ local function createBackedU32Memory(backingArr, u8Size)
     return true
   end
 
+  function memory.sizeBytes()
+    return math.floor(u8Size)
+  end
+
   function memory.sizePages()
     return math.floor(u8Size / PAGE_SIZE)
   end
